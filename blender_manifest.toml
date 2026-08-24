@@ -1,0 +1,14 @@
+schema_version = "1.0.0"
+
+id = "nba_live_ebo_tools"
+version = "0.1.0"
+name = "NBA Live EBO Tools"
+tagline = "Import and export NBA Live 2005 and 2006 player heads"
+maintainer = "EBO Tools 2026"
+type = "add-on"
+blender_version_min = "5.0.0"
+license = ["SPDX:GPL-3.0-or-later"]
+tags = ["Import-Export", "Mesh"]
+
+[permissions]
+files = "Import original player EBO files and export edited EBO files"

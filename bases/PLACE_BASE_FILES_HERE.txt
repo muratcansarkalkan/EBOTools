@@ -1,0 +1,6 @@
+Place the original base models in this folder:
+
+  base_lodB_05.ebo   NBA Live 2005
+  base_lodB.ebo      NBA Live 2006
+
+Alternatively, configure either file in the add-on preferences.
