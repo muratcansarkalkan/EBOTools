@@ -1,6 +1,6 @@
 schema_version = "1.0.0"
 id = "nba_live_environment_tools"
-version = "0.5.0"
+version = "0.7.0-alpha.5"
 name = "NBA Live EBO Tools"
 tagline = "Edit NBA Live player heads, environments, models, and textures"
 maintainer = "EBO Tools 2026"

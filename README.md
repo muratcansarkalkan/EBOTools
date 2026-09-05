@@ -1,194 +1,266 @@
-# NBA Live EBO Tools v0.5.0 Alpha
+# NBA Live EBO Tools
 
-Combined Blender add-on for importing, editing, and exporting selected NBA
-Live 2005 and NBA Live 06 player heads, environment/static EBO models, and FSH
-textures.
+Blender tools and reverse-engineering utilities for working with EA Sports NBA Live PC `.ebo` models.
 
-This remains an alpha release. Keep backups of every original game file and
-test exported assets individually in-game.
+The project currently targets **NBA Live 2005, NBA Live 06, and NBA Live 08** and is being developed against Blender 5.x. It grew from a fixed-topology EBO importer/exporter into a broader toolkit for PC EBO geometry, specialized models, frontend assets, and player morphs.
 
-## Supported workflows
+> **Status:** Research / alpha software. Keep backups of original game assets.
 
-- NBA Live 2005/06 high-detail player head EBO models
-- Bundled 2005 and 2006 head base models
-- Player-head vertex-position editing with original EA vertex IDs preserved
-- Player-head source-file verification and overwrite protection
-- NBA Live 2005/06 court and stadium EBO models
-- Transparent stadium parts
-- Adding, renaming, and removing stadium EBO material groups
-- Adding new stadium texture names
-- Selecting the main or `_vram` FSH archive for each new texture
-- Championship trophy and NBA Live 2005/06 ball models
-- Main, transparent, reflection, shadow, and playground backboard variants
-- Existing vertex-position and UV editing
-- Topology rebuilding for decoded static court and stadium geometry
-- Main and `_vram` FSH extraction and repacking through `gx.exe`
-- Slot-qualified FSH names such as `texture0:ball`
-- Automatic RGB-to-RGBA PNG conversion before GX packing
-- Automatic placeholder PNGs when textures or archives cannot be resolved
+## Current version
 
-## Installation
+**0.7.0-alpha.15**
 
-Install the extension through **Edit > Preferences > Add-ons > Install from
-Disk**, then enable **NBA Live EBO Tools**.
+This is not a finished general-purpose EBO compiler yet. The capabilities below are based on formats and workflows that have been tested during development.
 
-Set **GX Executable** in the add-on preferences. The path is stored once and
-reused during later imports and exports.
+## What works
 
-The required player-head templates, `base_lodB_05.ebo` and `base_lodB.ebo`,
-are included in the add-on. The preferences contain optional overrides for
-research or testing with another compatible base.
+### General EBO geometry
 
-The tools appear under the **NBA Live** tab in the 3D Viewport sidebar.
+EBO Tools can parse and import a growing range of NBA Live PC Geometry EBOs instead of relying only on individual asset-name profiles.
 
-## Player heads
+Current work includes:
 
-Use the **EBO Head Tools** panel:
+- EBO v17 file/header parsing.
+- Chunk and TOC parsing.
+- Export/string table parsing.
+- PC Geometry discovery.
+- PC vertex and index buffer discovery.
+- Position, normal, UV, index, and color stream handling where structurally available.
+- Multiple Geometry objects inside one EBO.
+- Multiple render batches/material sections.
+- Structural descriptor detection across different EBO layouts.
 
-1. Select NBA Live 2005 or NBA Live 2006.
-2. Import the original player head EBO.
-3. Move existing vertices in Blender.
-4. Export to a new EBO filename.
+The importer is intended to discover structures from the file rather than maintain a large list of hard-coded model names.
 
-The imported mesh remembers its game version, original player EBO, source-file
-hash, base model, original EA vertex IDs, and original vertex positions.
+### Fixed-topology model editing
 
-Player heads are deliberately fixed-topology:
+For supported models, existing geometry can be imported into Blender, edited, and written back while preserving the model's required structure.
 
-- NBA Live 2005 requires 734 rendered vertices and uses a sparse coordinate
-  morph stream.
-- NBA Live 2006 requires 733 rendered vertices and uses a dense coordinate
-  morph stream.
-- Do not add, delete, merge, subdivide, or reorder head vertices.
-- Export never overwrites the original player EBO.
-- NBA Live 2005 edits that require expanding an omitted sparse coordinate are
-  rejected instead of resizing and corrupting the file.
+The most reliable rule is:
 
-## Importing an EBO
+**Move or modify existing vertices; do not assume arbitrary topology changes are supported.**
 
-1. Keep the EBO beside its corresponding `.fsh` and `_vram.fsh` files, or set
-   their directory in the import panel.
-2. Enable **Extract FSH on Import** when the PNG files have not already been
-   extracted.
-3. Import the EBO.
-4. Edit the imported objects, UV maps, supported geometry, or materials.
+### Specialized topology editing
 
-Do not delete or rename imported Blender objects. Their names identify the
-original EBO geometry records during export.
+Topology growth inside already-existing specialized batches has been demonstrated for supported assets, including backboard work.
 
-If an FSH archive is absent, invalid, unsupported by GX, or missing a required
-texture, import continues with a 64×64 magenta-and-black placeholder PNG. The
-placeholder is placed in the normal extracted-texture directory and attached
-to the Blender material. Existing PNG files are never overwritten.
+The serializer can update affected stream data, counts, offsets, TOCs, and relocation-sensitive data for the supported cases.
 
-When the FSH directory supplies a slot-qualified name, the placeholder keeps
-its safe working filename. For example, `texture0:ball` becomes
-`texture0-ball.png`.
+This does **not** yet mean EBO Tools can create an arbitrary new render batch or material section.
 
-## EBO material naming
+### Backboards
 
-Imported materials use:
+Backboard EBO work includes NBA Live 2005/06-era format differences and specialized stream handling.
+
+Supported/researched capabilities include:
+
+- Geometry import.
+- Texture/UV editing.
+- Existing material usage.
+- Vertex editing.
+- Topology growth inside existing supported batches.
+- Specialized transform-selector/palette data preservation.
+
+Creating a completely new independent backboard material/render batch remains outside the proven feature set.
+
+### Frontend EBOs
+
+Frontend/APT-related EBO Geometry can be structurally imported.
+
+Tested work includes assets such as scoreboard/frontend geometry using EA render methods including `TextureScaleApt` and `GouraudApt`.
+
+Current capabilities include:
+
+- Frontend Geometry import.
+- Position editing.
+- Vertex-color editing.
+- Preservation of frontend-specific stream layouts.
+
+Arbitrary frontend topology growth is **not currently considered supported**. Experiments could produce files that serialized correctly but crashed in-game.
+
+### Player/base geometry assembly
+
+The tool can load a complete player base such as:
+
+- `base_lodB.ebo`
+- `base_lodC.ebo`
+- `base_lodD.ebo`
+
+and combine it with a partial player morph EBO.
+
+The base supplies the complete player Geometry. The morph only modifies the targets actually present in that morph file. Geometry with no corresponding morph target remains unchanged.
+
+This makes it possible to view a complete assembled player in Blender rather than isolated morph fragments.
+
+### Player morph decoding
+
+EBO Tools understands the PC morph structure sufficiently to decode and apply coordinate morph streams.
+
+Known morph targets include examples such as:
+
+- BasePlyr
+- headAShape / headBShape
+- jerseyShape
+- shortsShape
+- historicShortsShape
+- Shoe
+- hand poses
+- player-name shapes
+
+Morph streams may be dense or EA sparse/RLE encoded.
+
+### EA render-to-logical morph mapping
+
+A major part of the morph work is support for EA's explicit mapping between rendered Geometry vertices and logical morph vertices.
+
+This is important because one logical vertex can have multiple rendered copies at seams or across render batches.
+
+The tool supports both:
+
+- whole-Geometry EA mapping tables, as seen in head geometry;
+- per-render-batch EA mapping tables, as seen in BasePlyr and other multi-batch geometry.
+
+This replaced the earlier position-deduplication approximation for targets where authoritative EA tables are available.
+
+### Fixed-topology morph export
+
+The current player workflow is:
 
 ```text
-EBO.<texture> [<RMS type>]
+Import complete base EBO
+        ↓
+Import partial/player morph EBO
+        ↓
+Apply available morph targets
+        ↓
+Move/scale existing vertices in Blender
+        ↓
+Export the morph EBO
 ```
 
-Examples:
+The base EBO remains an immutable reference. Export writes the edited logical deltas back to the **morph EBO**, not the base.
 
-```text
-EBO.gcon [TextureStadium]
-EBO.odrn [ScrollTextureDim]
-```
+Vertex topology is intentionally fixed for morph editing.
 
-The text before the brackets is the texture name. The bracketed text is the
-RMS render-method type; it is not another texture name.
+### Sparse morph repacking
 
-For a new stadium material, create a normal Blender material, give it an EBO
-name, and assign at least one face. A readable RMS-type form is accepted:
+EA frequently omits zero XYZ morph components from its serialized coordinate payload.
 
-```text
-EBO.new0 [TextureStadium]
-```
+0.7.0-alpha.15 can rebuild the sparse membership mask and reuse existing stored-zero slots when an edit makes a previously omitted component non-zero.
 
-The explicit form selects both a template and destination archive:
-
-```text
-EBO.<new texture>.<template texture or RMS type>.<main|vram>
-```
-
-Examples:
-
-```text
-EBO.new0.TextureStadium.main
-EBO.animated_ad.ScrollTextureDim.vram
-```
-
-The template may be an existing texture/material-group name on that object or
-an RMS type shown in brackets.
-
-Removing every face assigned to an original stadium material removes that
-material group during export, provided the object retains at least one
-original material group.
-
-## FSH textures
-
-Enable **Repack FSH on Export** to rebuild the asset's archives.
-
-- Main and `_vram` textures are staged separately.
-- `:` is replaced with `-` only in working PNG filenames and restored inside
-  the repacked archive.
-- RGB PNG files are converted to opaque RGBA before GX packing. This prevents
-  GX from producing the incompatible `0x7F` format instead of `0x7D`.
-- Each archive is rebuilt from a filtered temporary directory, preventing
-  stale PNGs from leaking between main and `_vram` archives.
-- Placeholder PNGs may be replaced normally before repacking.
-
-## Specialized models
-
-Balls, trophies, backboards, reflection models, and shadow models contain
-specialized runtime and serializer data beyond ordinary static stadium
-geometry.
-
-For these models, the add-on currently supports only fixed-topology edits:
-
-- Move existing vertices
-- Edit existing UV coordinates
-- Preserve the original objects, material groups, vertex counts, and faces
-
-Adding, deleting, or rewiring vertices/faces is deliberately rejected before
-an EBO is written. Experimental additive backboard rebuilds either rendered
-distorted geometry or crashed NBA Live, even when their visible stream data
-and known serializer pointers validated. They are therefore not part of this
-release.
-
-Backboard formats confirmed for fixed-topology import/export include normal,
-transparent, reflection, shadow, shot-clock, and playground declaration
-variants. Playground backboards may use declaration variant `3`; this is a
-normal-bearing geometry declaration, not confirmed skeletal weight data.
+This allows substantially more freedom than simply preserving EA's original sparse mask.
 
 ## Current limitations
 
-- Creating completely new named EBO objects is unsupported.
-- Specialized-model topology changes are unsupported.
-- Native FSH encoding/decoding is not implemented; GX is still required.
-- Nets and player accessories such as goggles, headbands, and hair need
-  further sample-based research.
-- Unfamiliar EBO or RMS layouts may be rejected rather than exported unsafely.
+### Morph payload growth
 
-## Recommended testing sequence
+Sparse morph repacking currently preserves the source stream's allocated float capacity.
 
-1. Choose the matching game version and import an untouched model.
-2. Export without edits.
-3. Confirm that it loads in-game.
-4. Make one small UV edit and test again.
-5. Make one small vertex-position edit and test again.
-6. For static courts/stadiums only, proceed to material or topology changes.
+For example, if a source morph has room for 843 stored components but an edit requires 890 genuinely non-zero components, export stops instead of corrupting the EBO.
 
-If a model fails, retain the original EBO, exported EBO, relevant FSH files,
-the `.blend` file, and the exact Blender material names used.
+Future work needs to resize/rebuild MorphData and relocate the affected serialized data.
 
-## Suggested next research target
+### Morph topology
 
-The recommended next milestone is native FSH unpacking and repacking. Removing
-or reducing reliance on GX would improve every supported asset class and is a
-more contained next step than specialized EBO topology reconstruction.
+Morph editing is fixed topology.
+
+Do not:
+
+- add vertices;
+- delete vertices;
+- subdivide the mesh;
+- merge/reorder geometry;
+- add new faces expecting them to become part of the morph.
+
+The intended operation is movement/scaling of existing vertices.
+
+### Morph mapping edge cases
+
+Some targets—particularly player-name/letter geometry—contain multiple plausible EA mapping tables. These still need stronger structural association before they should be treated as fully editable/exportable.
+
+### New materials and render batches
+
+Existing Geometry/material structures can be preserved and edited in supported workflows.
+
+Creating an entirely new independent material/render batch from nothing is a separate serialization problem and is not yet a general supported feature.
+
+### Frontend topology growth
+
+Frontend vertex/color editing works, but arbitrary topology growth has not been made game-safe.
+
+## Tested game generations
+
+Development samples currently cover:
+
+| Game | Geometry | Specialized models | Player morph research |
+| --- | --- | --- | --- |
+| NBA Live 2005 | Yes | Yes | Yes |
+| NBA Live 06 | Yes | Yes | Yes |
+| NBA Live 08 | Yes | Samples/research | Yes |
+
+Support is determined by the actual EBO structure, not simply by game year.
+
+## Technical findings implemented by the project
+
+The project has established several useful pieces of the PC EBO format, including:
+
+- Little-endian EBO v17 containers.
+- 0x14-byte chunk headers.
+- 0x10-byte chunk TOC records.
+- TOC data targets relative to the TOC record.
+- 12-byte export records with relative exported-data references.
+- PC Geometry vertex/index buffer structures.
+- Geometry containing multiple render batches.
+- Render-method association and runtime naming behavior.
+- Specialized selector/palette streams.
+- Morph target exports and MorphStreamHeader structures.
+- Dense and sparse coordinate morph streams.
+- EA render-vertex to logical-morph mapping tables.
+- Per-batch mapping tables for multi-batch Geometry.
+
+The project deliberately treats **PC files and PC game behavior as authoritative**. Information from console/debug-symbol research is useful for identifying concepts and names, but is not assumed to define the PC binary layout.
+
+## Safety / backups
+
+These are reverse-engineered game formats. Always keep untouched copies of:
+
+- the original EBO;
+- the base player EBO used for a morph;
+- associated FSH/textures;
+- any archive (`.viv`, `.big`, etc.) being modified.
+
+Do not overwrite the source morph while testing an exported version.
+
+## Roadmap
+
+Immediate remaining morph work:
+
+1. Resizable sparse MorphData and safe relocation.
+2. Full edit/export validation of head, jersey, shorts, shoes, hands, and other targets.
+3. Resolve ambiguous mapping-table associations.
+4. Stronger topology-integrity validation.
+5. Finalize the morph editing UI and reporting.
+
+The next major Geometry milestone is a **from-scratch court exporter**:
+
+```text
+Blender mesh
+    ↓
+EBO Tools serializer
+    ↓
+new PC Geometry EBO
+    ↓
+NBA Live
+```
+
+The initial goal is a minimal game-loadable court EBO generated by EBO Tools rather than an existing EBO used as a byte template. From there the serializer can expand toward multiple meshes, materials, render batches, and complete custom courts.
+
+## Project philosophy
+
+EBO Tools is moving toward a structural EBO implementation rather than a collection of one-off converters.
+
+Where possible, the tool should discover what an EBO contains, preserve structures it does not need to modify, use EA's own mappings when they exist, and refuse unsafe exports rather than silently producing corrupted files.
+
+---
+
+NBA Live and related names are trademarks of their respective owners. This is an independent reverse-engineering/modding project and is not affiliated with or endorsed by Electronic Arts.

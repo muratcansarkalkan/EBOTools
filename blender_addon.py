@@ -18,6 +18,9 @@ from . import fsh_archive
 
 COLOR_LAYER = "NBA Live Vertex Colors"
 UV_LAYER = "UVMap"
+SELECTOR_ATTRIBUTE = "eagl_transform_selector"
+PALETTE_ATTRIBUTE = "eagl_palette_size"
+SELECTOR_COLOR_ATTRIBUTE = "eagl_selector_debug_color"
 COLLECTION_SOURCE = "nba_live_ebo_source"
 ARCHIVE_ITEMS = (
     ("MAIN", "Main FSH", "Store the texture in the asset's main .fsh archive"),
@@ -260,6 +263,9 @@ def _build_object(
     vertex_colors: list[tuple[float, float, float, float]] = []
     has_vertex_colors = any(batch.colors is not None for batch in mesh_record.batches)
     has_uvs = any(batch.uvs is not None for batch in mesh_record.batches)
+    has_selectors = any(batch.selectors for batch in mesh_record.batches)
+    vertex_selectors: list[int] = []
+    vertex_palette_sizes: list[int] = []
 
     for batch in mesh_record.batches:
         base = len(vertices)
@@ -278,6 +284,8 @@ def _build_object(
             vertices.append(_game_to_blender(position))
             vertex_uvs.append((u, 1.0 - v))
             vertex_colors.append((red / 255, green / 255, blue / 255, alpha / 255))
+            vertex_selectors.append(batch.selectors[index] if batch.selectors else -1)
+            vertex_palette_sizes.append(batch.palette_count if batch.selectors else 0)
         for triangle in batch.triangles:
             faces.append(tuple(base + index for index in triangle))
             face_batches.append(batch.batch_index)
@@ -324,6 +332,14 @@ def _build_object(
             )
         for vertex_index, color in enumerate(vertex_colors):
             _write_color(color_layer.data[vertex_index], color)
+
+    if has_selectors:
+        _diagnostic(f"Object {mesh_record.name}: exposing EAGL transform selectors")
+        selector_attr = geometry.attributes.new(name=SELECTOR_ATTRIBUTE, type="INT", domain="POINT")
+        palette_attr = geometry.attributes.new(name=PALETTE_ATTRIBUTE, type="INT", domain="POINT")
+        for index, value in enumerate(vertex_selectors):
+            selector_attr.data[index].value = value
+            palette_attr.data[index].value = vertex_palette_sizes[index]
     _diagnostic(f"Object {mesh_record.name}: updating mesh")
     geometry.update()
     _diagnostic(f"Object {mesh_record.name}: finished")
@@ -662,6 +678,8 @@ def _extract_batch_geometry(court: ebo_core.Court, mesh_record: ebo_core.Mesh, o
         positions: list[tuple[float, float, float]] = []
         uvs: list[tuple[float, float]] = []
         colors: list[tuple[int, int, int, int]] = []
+        selectors: list[int] = []
+        selector_layer = geometry.attributes.get(SELECTOR_ATTRIBUTE) if batch.selectors else None
         first_loop: dict[int, int] = {}
         for triangle in triangles:
             for loop_index in triangle.loops:
@@ -704,7 +722,14 @@ def _extract_batch_geometry(court: ebo_core.Court, mesh_record: ebo_core.Mesh, o
                 else:
                     rgba = 255, 255, 255, 255
 
-            identity = vertex_index, uv, rgba
+            selector_identity = None
+            if batch.selectors:
+                if selector_layer is None or selector_layer.domain != "POINT":
+                    raise ebo_core.CourtFormatError(
+                        f"Material {batch.material!r} requires {SELECTOR_ATTRIBUTE!r} for safe export."
+                    )
+                selector_identity = int(selector_layer.data[vertex_index].value)
+            identity = vertex_index, uv, rgba, selector_identity
             if identity in lookup:
                 return lookup[identity]
             local_index = len(positions)
@@ -720,7 +745,19 @@ def _extract_batch_geometry(court: ebo_core.Court, mesh_record: ebo_core.Mesh, o
             lookup[identity] = local_index
             positions.append(position)
             uvs.append(uv)
-            colors.append((blue, green, red, alpha))
+            colors.append((red, green, blue, alpha))
+            if batch.selectors:
+                if selector_layer is None or selector_layer.domain != "POINT":
+                    raise ebo_core.CourtFormatError(
+                        f"Material {batch.material!r} requires {SELECTOR_ATTRIBUTE!r} for safe export."
+                    )
+                selector = int(selector_layer.data[vertex_index].value)
+                if not 0 <= selector < batch.palette_count:
+                    raise ebo_core.CourtFormatError(
+                        f"Material {batch.material!r}, vertex {vertex_index} has selector {selector}; "
+                        f"valid range is 0..{batch.palette_count - 1}."
+                    )
+                selectors.append(selector)
             return local_index
 
         if preserve_imported_indices:
@@ -746,47 +783,25 @@ def _extract_batch_geometry(court: ebo_core.Court, mesh_record: ebo_core.Mesh, o
             strip = struct.unpack_from(
                 f"<{batch.primitive_count + 2}H", court.data, batch.indices.data_offset
             )
-        elif batch.profile != "STATIC_COLOR" and preserve_imported_indices and (
-            additions := ebo_core._added_triangles(batch.triangles, triangle_tuple)
-        ) is not None:
-            # Backboard topology support is deliberately additive-only. The
-            # existing streams remain authoritative; Blender contributes only
-            # appended vertices and faces. This avoids rewriting authored data
-            # that the game may interpret beyond positions, UVs, and normals.
-            for index in range(batch.vertex_count):
-                original_position = struct.unpack_from(
-                    "<3f", court.data, batch.positions.data_offset + index * 12
-                )
-                if any(abs(current - original) > 1e-5 for current, original in zip(positions[index], original_position)):
-                    raise ebo_core.CourtFormatError(
-                        f"Material {batch.material!r} changes original vertex {index}. "
-                        "Additive topology mode permits only new vertices and faces."
-                    )
-                positions[index] = original_position
-                if batch.uvs is not None:
-                    uvs[index] = struct.unpack_from(
-                        "<2f", court.data, batch.uvs.data_offset + index * 8
-                    )
-                if batch.colors is not None:
-                    colors[index] = struct.unpack_from(
-                        "<4B", court.data, batch.colors.data_offset + index * 4
-                    )
+        else:
             original_strip = struct.unpack_from(
                 f"<{batch.primitive_count + 2}H", court.data, batch.indices.data_offset
             )
-            strip = ebo_core._append_strip_triangles(original_strip, additions, len(positions))
-            # Strip decoding retains the original face order, followed by only
-            # the newly added faces. Use that same order for rebuild validation.
-            triangle_tuple = batch.triangles + additions
-        elif batch.profile != "STATIC_COLOR":
-            raise ebo_core.CourtFormatError(
-                f"Material {batch.material!r} changes or removes original topology. "
-                "Backboard topology export currently permits only appended vertices and faces."
-            )
-        else:
-            strip = ebo_core._triangles_to_strip(triangle_tuple)
+            if batch.profile == "FRONTEND_COLOR":
+                if triangle_tuple == batch.triangles and len(positions) == batch.vertex_count:
+                    strip = tuple(original_strip)
+                else:
+                    strip = ebo_core._frontend_triangles_to_strip(
+                        triangle_tuple, len(positions)
+                    )
+            elif batch.profile != "STATIC_COLOR":
+                strip = ebo_core._edited_specialized_strip(
+                    tuple(original_strip), batch.triangles, triangle_tuple, len(positions)
+                )
+            else:
+                strip = ebo_core._triangles_to_strip(triangle_tuple)
         results[mesh_record.name, batch.batch_index] = ebo_core.RebuiltBatch(
-            tuple(positions), tuple(uvs), tuple(colors), triangle_tuple, tuple(strip)
+            tuple(positions), tuple(uvs), tuple(colors), triangle_tuple, tuple(strip), tuple(selectors)
         )
     return results
 
@@ -1294,6 +1309,60 @@ class NBA_OT_import_fbx(bpy.types.Operator, ImportHelper):
         return {"FINISHED"}
 
 
+class NBA_OT_visualize_selectors(bpy.types.Operator):
+    bl_idname = "nba_live.visualize_selectors"
+    bl_label = "Visualize Transform Selectors"
+    bl_description = "Color the active mesh by its EAGL transform-selector value"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        return (
+            obj is not None and obj.type == "MESH"
+            and obj.data.attributes.get(SELECTOR_ATTRIBUTE) is not None
+        )
+
+    def execute(self, context):
+        obj = context.active_object
+        mesh = obj.data
+        selector = mesh.attributes.get(SELECTOR_ATTRIBUTE)
+        if selector is None or selector.domain != "POINT":
+            self.report({"ERROR"}, "Active mesh has no point-domain EAGL selector attribute")
+            return {"CANCELLED"}
+        existing = mesh.color_attributes.get(SELECTOR_COLOR_ATTRIBUTE)
+        if existing is not None:
+            mesh.color_attributes.remove(existing)
+        colors = mesh.color_attributes.new(
+            name=SELECTOR_COLOR_ATTRIBUTE, type="BYTE_COLOR", domain="POINT"
+        )
+        # High-contrast deterministic diagnostic palette; values beyond the
+        # common 0..3 range still receive stable distinct hues.
+        palette = (
+            (0.90, 0.12, 0.12, 1.0),
+            (0.10, 0.55, 0.95, 1.0),
+            (0.15, 0.80, 0.25, 1.0),
+            (0.95, 0.65, 0.10, 1.0),
+            (0.65, 0.20, 0.90, 1.0),
+            (0.10, 0.80, 0.80, 1.0),
+        )
+        for index, item in enumerate(selector.data):
+            value = int(item.value)
+            rgba = palette[value % len(palette)] if value >= 0 else (0.15, 0.15, 0.15, 1.0)
+            _write_color(colors.data[index], rgba)
+        mesh.color_attributes.active_color_name = SELECTOR_COLOR_ATTRIBUTE
+        for area in context.screen.areas if context.screen else ():
+            if area.type == "VIEW_3D":
+                for space in area.spaces:
+                    if space.type == "VIEW_3D":
+                        space.shading.color_type = "VERTEX"
+        mesh.update()
+        values = [int(item.value) for item in selector.data if int(item.value) >= 0]
+        if values:
+            self.report({"INFO"}, f"Showing selector groups {min(values)}..{max(values)}")
+        return {"FINISHED"}
+
+
 class NBA_PT_environment_panel(bpy.types.Panel):
     bl_label = "NBA Live Environments"
     bl_idname = "NBA_PT_environment_panel"
@@ -1331,6 +1400,12 @@ class NBA_PT_environment_panel(bpy.types.Panel):
             info.label(text=f"Active: {collection.name}", icon="OUTLINER_COLLECTION")
             info.label(text=f"Template: {Path(collection[COLLECTION_SOURCE]).name}")
 
+            obj = context.active_object
+            if obj is not None and obj.type == "MESH" and obj.data.attributes.get(SELECTOR_ATTRIBUTE):
+                debug = layout.box()
+                debug.label(text="Backboard / Skin Diagnostics", icon="SHADING_RENDERED")
+                debug.operator("nba_live.visualize_selectors", icon="COLOR")
+
 
 def _import_menu(self, context):
     self.layout.operator(NBA_OT_import_environment.bl_idname, text="NBA Live Court / Stadium (.ebo)")
@@ -1348,6 +1423,7 @@ CLASSES = (
     NBA_OT_export_environment,
     NBA_OT_import_fbx,
     NBA_OT_export_fbx,
+    NBA_OT_visualize_selectors,
     NBA_PT_environment_panel,
 )
 

@@ -50,6 +50,18 @@ class Batch:
     normals: Buffer | None = None
     texture_names: tuple[str, ...] = ()
     profile: str = "STATIC_COLOR"
+    palette_count: int = 0
+    selector_offset: int | None = None
+    selectors: tuple[int, ...] = ()
+    # Structural descriptor metadata. Export code uses these offsets instead
+    # of deciding binary layout from asset/profile names. None means that the
+    # serialized representation has no corresponding field.
+    descriptor_offset: int = 0
+    pcdata_word: int | None = None
+    count_word: int | None = None
+    primitive_word: int | None = None
+    palette_word: int | None = None
+    selector_word: int | None = None
 
 
 @dataclass(frozen=True)
@@ -143,6 +155,39 @@ def _strip_triangles(indices: tuple[int, ...], vertex_count: int) -> tuple[tuple
     return tuple(triangles)
 
 
+def _looks_like_buffer(data: bytes, offset: int, stride: int) -> bool:
+    if offset < 0 or offset + 24 > len(data):
+        return False
+    try:
+        byte_count, actual_stride, data_offset = _read(data, "<III", offset)
+    except (CourtFormatError, struct.error):
+        return False
+    return (
+        actual_stride == stride
+        and byte_count > 0
+        and byte_count % stride == 0
+        and 0 <= data_offset <= len(data) - byte_count
+    )
+
+
+def _discover_pcdata_word(data: bytes, descriptor_offset: int, words: tuple[int, ...],
+                          index_buffer: int, vertex_buffers: tuple[int, ...]) -> int | None:
+    """Find the descriptor field that points to PCDataBuffers from its contents."""
+    wanted = set(vertex_buffers)
+    for word_index, candidate in enumerate(words):
+        if candidate <= 0 or candidate + 20 + 4 * len(vertex_buffers) > len(data):
+            continue
+        try:
+            index_ptr, zero, vertex_count, num_vbs, zero2 = _read(data, "<5I", candidate)
+            vb_ptrs = _read(data, f"<{num_vbs}I", candidate + 20) if 0 < num_vbs <= 8 else ()
+        except (CourtFormatError, struct.error):
+            continue
+        if index_ptr == index_buffer and zero == 0 and zero2 == 0 and num_vbs == len(vertex_buffers):
+            if set(vb_ptrs) == wanted:
+                return word_index
+    return None
+
+
 def parse_court(data: bytes) -> Court:
     if len(data) < 48 or data[:4] != b"EBO\0":
         raise CourtFormatError("Not an EBO file.")
@@ -177,20 +222,96 @@ def parse_court(data: bytes) -> Court:
         for batch_index in range(batch_count):
             descriptor_offset = _read(data, "<I", batch_table + batch_index * 48 + 12)[0]
             fields = _read(data, "<9I", descriptor_offset)
+            # Some RenderMethods pack multiple draw descriptors contiguously
+            # behind one material pointer.  APT score geometry demonstrates a
+            # two-draw record (leading count 3).  Expand those structurally.
+            descriptor_candidates = [descriptor_offset]
             if fields[0] != 5:
-                raise CourtFormatError(f"Unsupported stream descriptor in {mesh_name}, batch {batch_index}.")
+                scan = descriptor_offset + 4
+                found = []
+                for _ in range(8):
+                    if scan + 36 > len(data):
+                        break
+                    if _read(data, "<I", scan)[0] == 5:
+                        f = _read(data, "<9I", scan)
+                        if (_looks_like_buffer(data, f[1], 12) and
+                            _looks_like_buffer(data, f[2], 4) and
+                            _looks_like_buffer(data, f[3], 2)):
+                            found.append(scan)
+                            scan += 9 * 4
+                            continue
+                    scan += 4
+                if not found:
+                    raise CourtFormatError(f"Unsupported stream descriptor in {mesh_name}, batch {batch_index}.")
+                # The current Blender model represents one material row as one
+                # batch, so parse the first draw now; additional draws are
+                # retained as a compound frontend profile for later expansion.
+                descriptor_offset = found[0]
+                fields = _read(data, "<9I", descriptor_offset)
+            palette_count = 0
+            selector_offset = None
+            selectors: tuple[int, ...] = ()
+            pcdata_word = count_word = primitive_word = palette_word_meta = selector_word_meta = None
             # Static Geometry begins with direct position/UV/colour/index
             # pointers. Skinned models instead begin with compression data.
             # Balls and main/transparent backboards use layout A; reflection
             # and planar-shadow backboards use the shifted layout B.
-            layout_a = fields[2] in (1, 2, 3) and fields[4] >= descriptor_offset
-            layout_b = fields[1] in (1, 2) and fields[3] >= descriptor_offset
-            layout_c = fields[3] in (1, 2) and fields[5] >= descriptor_offset
-            if layout_a:
+            # APT/frontend RenderMethods (e.g. TextureScaleApt/GouraudApt)
+            # serialize position + Colour + index streams.  They have no UV
+            # buffer: UV placement is driven by the frontend RenderMethod.
+            # Detect this from the buffers themselves rather than the asset name.
+            layout_frontend = (
+                _looks_like_buffer(data, fields[1], 12)
+                and _looks_like_buffer(data, fields[2], 4)
+                and _looks_like_buffer(data, fields[3], 2)
+            )
+            layout_a = (
+                _looks_like_buffer(data, fields[4], 12)
+                and _looks_like_buffer(data, fields[5], 12)
+                and _looks_like_buffer(data, fields[7], 8)
+                and _looks_like_buffer(data, fields[8], 2)
+            )
+            layout_b = (
+                _looks_like_buffer(data, fields[3], 12)
+                and (
+                    _looks_like_buffer(data, fields[5], 8)
+                    or _looks_like_buffer(data, fields[5], 4)
+                )
+            )
+            layout_c = (
+                _looks_like_buffer(data, fields[5], 12)
+                and _looks_like_buffer(data, fields[6], 12)
+                and _looks_like_buffer(data, fields[8], 8)
+            )
+            if layout_c:
+                _c_ext = _read(data, "<18I", descriptor_offset)
+                layout_c = _looks_like_buffer(data, _c_ext[9], 2)
+            if layout_frontend:
+                position_offset, color_offset, index_offset = fields[1], fields[2], fields[3]
+                vertex_count = _read(data, "<I", position_offset)[0] // 12
+                primitive_count = _read(data, "<I", index_offset)[0] // 2 - 2
+                positions = _buffer(data, position_offset, 12, vertex_count)
+                normals = None
+                uvs = None
+                colors = _buffer(data, color_offset, 4, vertex_count)
+                texture_names = ()
+                material = f"frontend_{batch_index:02d}"
+                profile = "FRONTEND_COLOR"
+                # Frontend descriptors vary in where PCDataBuffers is stored
+                # (compound draw records can shift it). Discover it from the
+                # PCData structure instead of mapping by profile name.
+                frontend_words = _read(data, "<12I", descriptor_offset)
+                pcdata_word = _discover_pcdata_word(
+                    data, descriptor_offset, frontend_words,
+                    index_offset, (position_offset, color_offset)
+                )
+                count_word, primitive_word = 4, 5
+            elif layout_a:
                 extended = _read(data, "<17I", descriptor_offset)
                 position_offset, normal_offset = extended[4], extended[5]
                 uv_offset, index_offset = extended[7], extended[8]
-                vertex_count, primitive_count = extended[9], extended[10]
+                vertex_count = _read(data, "<I", position_offset)[0] // 12
+                primitive_count = _read(data, "<I", index_offset)[0] // 2 - 2
                 # Texture string references follow the fixed player descriptor.
                 # The word before PCData is not a texture count: NBA Live 06's
                 # ball has two names here while that word remains one. Stop at
@@ -215,11 +336,14 @@ def parse_court(data: bytes) -> Court:
                 colors = None
                 material = texture_names[0]
                 profile = "PLAYER_NORMAL"
+                pcdata_word, count_word, primitive_word = 15, 9, 10
+                palette_word_meta, selector_word_meta = 2, 6
             elif layout_c:
                 extended = _read(data, "<18I", descriptor_offset)
                 position_offset, normal_offset = extended[5], extended[6]
                 uv_offset, index_offset = extended[8], extended[9]
-                vertex_count, primitive_count = extended[10], extended[11]
+                vertex_count = _read(data, "<I", position_offset)[0] // 12
+                primitive_count = _read(data, "<I", index_offset)[0] // 2 - 2
                 relative = extended[17]
                 texture_names = (_cstring(data, string_table + relative),)
                 positions = _buffer(data, position_offset, 12, vertex_count)
@@ -228,6 +352,8 @@ def parse_court(data: bytes) -> Court:
                 colors = None
                 material = texture_names[0]
                 profile = "BACKBOARD_SHOTCLOCK"
+                pcdata_word, count_word, primitive_word = 16, 10, 11
+                palette_word_meta, selector_word_meta = 3, 7
             elif layout_b:
                 extended = _read(data, "<16I", descriptor_offset)
                 position_offset = extended[3]
@@ -245,6 +371,8 @@ def parse_court(data: bytes) -> Court:
                     texture_names = (_cstring(data, string_table + relative),)
                     material = texture_names[0]
                     profile = "BACKBOARD_REFLECTION"
+                    pcdata_word, count_word, primitive_word = 14, 8, 9
+                    palette_word_meta, selector_word_meta = 1, 4
                 elif stream_stride == 4:
                     vertex_count, primitive_count = extended[7], extended[8]
                     normals = None
@@ -254,6 +382,8 @@ def parse_court(data: bytes) -> Court:
                     texture_names = ()
                     material = f"shadow_{batch_index:02d}"
                     profile = "BACKBOARD_SHADOW"
+                    pcdata_word, count_word, primitive_word = 13, 7, 8
+                    palette_word_meta, selector_word_meta = 1, 4
                 else:
                     raise CourtFormatError(
                         f"Unsupported backboard stream stride {stream_stride} in {mesh_name}."
@@ -269,6 +399,20 @@ def parse_court(data: bytes) -> Court:
                 texture_names = (_cstring(data, string_table + material_offset),)
                 material = texture_names[0]
                 profile = "STATIC_COLOR"
+            # Specialized backboard-style descriptors may carry a raw i16
+            # per-vertex local-palette selector outside PCDataBuffers.  Only
+            # expose it when the candidate is self-validating: one selector
+            # per vertex and every value falls inside the declared palette.
+            if selector_word_meta is not None and vertex_count:
+                candidate_palette = extended[palette_word_meta]
+                candidate_offset = extended[selector_word_meta]
+                if 0 < candidate_palette <= 1024 and 0 <= candidate_offset <= len(data) - vertex_count * 2:
+                    candidate = _read(data, f"<{vertex_count}H", candidate_offset)
+                    if candidate and max(candidate) < candidate_palette:
+                        palette_count = candidate_palette
+                        selector_offset = candidate_offset
+                        selectors = tuple(candidate)
+
             if not vertex_count:
                 raise CourtFormatError(f"Material in {mesh_name} contains no vertices.")
             # A triangle strip needs its two initial vertices in addition to the
@@ -290,10 +434,45 @@ def parse_court(data: bytes) -> Court:
                     normals=normals,
                     texture_names=texture_names,
                     profile=profile,
+                    palette_count=palette_count,
+                    selector_offset=selector_offset,
+                    selectors=selectors,
+                    descriptor_offset=descriptor_offset,
+                    pcdata_word=pcdata_word,
+                    count_word=count_word,
+                    primitive_word=primitive_word,
+                    palette_word=palette_word_meta,
+                    selector_word=selector_word_meta,
                 )
             )
         meshes.append(Mesh(mesh_name, mesh_offset, tuple(batches)))
     return Court(data, tuple(meshes))
+
+
+def validate_transform_selectors(court: Court) -> tuple[str, ...]:
+    """Validate detected per-vertex local-palette selector streams."""
+    reports: list[str] = []
+    for batch in court.batches:
+        if not batch.selectors:
+            continue
+        if len(batch.selectors) != batch.vertex_count:
+            raise CourtFormatError(
+                f"Material {batch.material!r} has {len(batch.selectors)} selectors for "
+                f"{batch.vertex_count} vertices."
+            )
+        if batch.palette_count <= 0:
+            raise CourtFormatError(f"Material {batch.material!r} has selectors but no palette.")
+        invalid = [value for value in batch.selectors if value >= batch.palette_count]
+        if invalid:
+            raise CourtFormatError(
+                f"Material {batch.material!r} has selector {invalid[0]} outside palette "
+                f"0..{batch.palette_count - 1}."
+            )
+        reports.append(
+            f"{batch.mesh_name}/{batch.material}: {batch.vertex_count} selectors, "
+            f"palette {batch.palette_count}, range {min(batch.selectors)}..{max(batch.selectors)}"
+        )
+    return tuple(reports)
 
 
 def external_variable_groups(court: Court) -> tuple[ExternalVariableGroup, ...]:
@@ -726,6 +905,7 @@ class RebuiltBatch:
     colors: tuple[tuple[int, int, int, int], ...]
     triangles: tuple[tuple[int, int, int], ...]
     strip: tuple[int, ...]
+    selectors: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1337,6 +1517,162 @@ def _append_strip_triangles(
     return rebuilt
 
 
+
+
+
+def _frontend_triangles_to_strip(
+    triangles: tuple[tuple[int, int, int], ...],
+    vertex_count: int,
+) -> tuple[int, ...]:
+    """Build compact strip runs for frontend geometry, including disconnected islands."""
+    if not triangles:
+        return ()
+    remaining = list(triangles)
+    runs: list[list[int]] = []
+    while remaining:
+        first = remaining.pop(0)
+        run = [first[0], first[1], first[2]]
+        while remaining:
+            index = len(run)
+            a, b = run[-2], run[-1]
+            if index % 2:
+                a, b = b, a
+            found = value = None
+            for i, tri in enumerate(remaining):
+                x, y, z = tri
+                for u, v, w in ((x, y, z), (y, z, x), (z, x, y)):
+                    if u == a and v == b:
+                        found, value = i, w
+                        break
+                if found is not None:
+                    break
+            if found is None:
+                break
+            run.append(value)
+            remaining.pop(found)
+        runs.append(run)
+
+    strip = list(runs[0])
+    for run in runs[1:]:
+        x, y, *tail = run
+        # Degenerate bridge. Adjust orientation for the destination run.
+        if (len(strip) + 4) % 2:
+            x, y = y, x
+        strip.extend((strip[-1], x, x, y, *tail))
+    rebuilt = tuple(strip)
+    if not _same_oriented_triangles(_strip_triangles(rebuilt, vertex_count), triangles):
+        raise CourtFormatError("Could not encode frontend triangles as compact strips.")
+    return rebuilt
+
+def _append_frontend_strip_triangles(
+    original_strip: tuple[int, ...],
+    additions: tuple[tuple[int, int, int], ...],
+    vertex_count: int,
+) -> tuple[int, ...]:
+    """Append frontend faces as connected runs instead of one bridge per face."""
+    if not additions:
+        return original_strip
+    remaining = list(additions)
+    runs: list[list[int]] = []
+    while remaining:
+        first = remaining.pop(0)
+        run = [first[0], first[1], first[2]]
+        while remaining:
+            index = len(run)
+            a, b = run[-2], run[-1]
+            if index % 2:
+                a, b = b, a
+            found = None
+            value = None
+            for i, tri in enumerate(remaining):
+                x, y, z = tri
+                for u, v, w in ((x, y, z), (y, z, x), (z, x, y)):
+                    if u == a and v == b:
+                        found, value = i, w
+                        break
+                if found is not None:
+                    break
+            if found is None:
+                break
+            run.append(value)
+            remaining.pop(found)
+        runs.append(run)
+
+    strip = list(original_strip)
+    for run in runs:
+        x, y, *tail = run
+        # Bridge to the run with degenerates, then continue its strip.
+        if (len(strip) + 4) % 2:
+            x, y = y, x
+        strip.extend((strip[-1], x, x, y, *tail))
+    rebuilt = tuple(strip)
+    expected = _strip_triangles(original_strip, vertex_count) + additions
+    if not _same_oriented_triangles(_strip_triangles(rebuilt, vertex_count), expected):
+        raise CourtFormatError("Could not extend frontend triangle strip compactly.")
+    return rebuilt
+
+def _edited_specialized_strip(
+    original_strip: tuple[int, ...],
+    original_triangles: tuple[tuple[int, int, int], ...],
+    edited_triangles: tuple[tuple[int, int, int], ...],
+    vertex_count: int,
+) -> tuple[int, ...]:
+    """Prefer EA's original strip; otherwise build adjacency-connected runs.
+
+    Additive edits preserve the original strip byte-for-byte and append only
+    the genuinely new faces. Destructive/rewired edits cannot safely retain
+    the old strip wholesale, so build long connected runs before inserting a
+    degenerate bridge. This avoids the previous five-index bridge per face.
+    """
+    additions = _added_triangles(original_triangles, edited_triangles)
+    if additions is not None:
+        return _append_strip_triangles(original_strip, additions, vertex_count)
+
+    remaining = list(edited_triangles)
+    if not remaining:
+        raise CourtFormatError("Every existing mesh/material group must retain at least one triangle.")
+
+    # Keep Blender's first triangle as the first run seed.  A triangle may be
+    # cyclically rotated without changing its winding.
+    first = remaining.pop(0)
+    strip = [first[0], first[1], first[2]]
+
+    while remaining:
+        # Appending one index creates a triangle from the strip's final edge.
+        # Find a same-winding triangle that can continue that edge.
+        index = len(strip)
+        a, b = strip[-2], strip[-1]
+        if index % 2:
+            a, b = b, a
+
+        found = None
+        next_value = None
+        for i, tri in enumerate(remaining):
+            x, y, z = tri
+            for u, v, w in ((x, y, z), (y, z, x), (z, x, y)):
+                if u == a and v == b:
+                    found = i
+                    next_value = w
+                    break
+            if found is not None:
+                break
+
+        if found is not None:
+            strip.append(next_value)
+            remaining.pop(found)
+            continue
+
+        # Start a new disconnected run.  Degenerates make the bridge invisible.
+        x, y, z = remaining.pop(0)
+        if (len(strip) + 4) % 2:
+            x, y = y, x
+        strip.extend((strip[-1], x, x, y, z))
+
+    rebuilt = tuple(strip)
+    if not _same_oriented_triangles(_strip_triangles(rebuilt, vertex_count), edited_triangles):
+        raise CourtFormatError("Could not create a valid compact strip for the edited specialized mesh.")
+    return rebuilt
+
 def _parse_rebuild_obj(court: Court, path: Path, *, flip_v: bool) -> dict[tuple[str, int], RebuiltBatch]:
     mesh_names = {mesh.name for mesh in court.meshes}
     batches_by_material = {
@@ -1536,7 +1872,7 @@ def _rebuild_specialized_topology(
     court: Court,
     edited: dict[tuple[str, int], RebuiltBatch],
 ) -> tuple[bytes, int]:
-    """Grow additive streams in their native locations and relocate later pointers."""
+    """Replace specialized streams in native locations and relocate later pointers."""
     updates: list[tuple[Batch, RebuiltBatch, list[tuple[Buffer, bytes, int]]]] = []
     changed = 0
     for mesh in court.meshes:
@@ -1550,11 +1886,9 @@ def _rebuild_specialized_topology(
             if not topology_changed:
                 continue
             additions = _added_triangles(batch.triangles, rebuilt.triangles)
-            if len(rebuilt.positions) < batch.vertex_count or additions is None:
-                raise CourtFormatError(
-                    f"Material {batch.material!r} changes or removes original topology. "
-                    "Specialized EBO topology export currently permits only appended vertices and faces."
-                )
+            # 0.6.2 experimental generalized specialized rebuild. Complete
+            # streams are replaced, so original triangles may be removed or
+            # rewired instead of requiring append-only topology.
             changed += 1
             count = len(rebuilt.positions)
             if not count or count > 65536:
@@ -1585,8 +1919,22 @@ def _rebuild_specialized_topology(
             if batch.uvs is not None:
                 streams.append((batch.uvs, b"".join(struct.pack("<2f", *item) for item in rebuilt.uvs), 8))
             if batch.colors is not None:
-                streams.append((batch.colors, b"".join(struct.pack("<4B", *item) for item in rebuilt.colors), 4))
+                streams.append((batch.colors, b"".join(
+                    struct.pack("<4B", item[2], item[1], item[0], item[3]) for item in rebuilt.colors
+                ), 4))
             streams.append((batch.indices, struct.pack(f"<{len(rebuilt.strip)}H", *rebuilt.strip), 2))
+            if batch.selectors:
+                if len(rebuilt.selectors) != count:
+                    raise CourtFormatError(
+                        f"Material {batch.material!r} has {len(rebuilt.selectors)} transform selectors "
+                        f"for {count} vertices."
+                    )
+                invalid = [value for value in rebuilt.selectors if not 0 <= value < batch.palette_count]
+                if invalid:
+                    raise CourtFormatError(
+                        f"Material {batch.material!r} has selector {invalid[0]} outside palette "
+                        f"0..{batch.palette_count - 1}."
+                    )
             updates.append((batch, rebuilt, streams))
 
     replacements: list[tuple[int, int, bytes]] = []
@@ -1598,13 +1946,9 @@ def _rebuild_specialized_topology(
             mesh.offset + 116 + batch.batch_index * 48
             for mesh in court.meshes if mesh.name == batch.mesh_name
         ))[0]
-        pc_index = {
-            "PLAYER_NORMAL": 15,
-            "BACKBOARD_SHOTCLOCK": 16,
-            "BACKBOARD_REFLECTION": 14,
-            "BACKBOARD_SHADOW": 13,
-        }[batch.profile]
-        old_pc_data = _read(court.data, "<I", descriptor + pc_index * 4)[0]
+        if batch.pcdata_word is None:
+            raise CourtFormatError(f"Topology rebuilding is not yet defined for descriptor {batch.profile!r}.")
+        old_pc_data = _read(court.data, "<I", descriptor + batch.pcdata_word * 4)[0]
         for buffer, stream_data, stride in streams:
             end = old_pc_data if buffer is batch.indices else buffer.data_offset + buffer.byte_count
             payload = stream_data
@@ -1613,6 +1957,12 @@ def _rebuild_specialized_topology(
             replacements.append((buffer.data_offset, end, payload))
             changed_lengths[buffer.offset] = len(stream_data)
             changed_strides[buffer.offset] = stride
+        if batch.selectors and batch.selector_offset is not None:
+            old_size = (batch.vertex_count * 2 + 3) & ~3
+            rebuilt_selectors = edited[batch.mesh_name, batch.batch_index].selectors
+            selector_data = struct.pack(f"<{len(rebuilt_selectors)}H", *rebuilt_selectors)
+            selector_payload = selector_data + b"\xdf" * (((-len(selector_data)) % 4))
+            replacements.append((batch.selector_offset, batch.selector_offset + old_size, selector_payload))
 
     replacements.sort(key=lambda item: item[0])
     ends: list[int] = []
@@ -1621,7 +1971,7 @@ def _rebuild_specialized_topology(
     cursor = 0
     for start, end, payload in replacements:
         if start < cursor:
-            raise CourtFormatError("Overlapping specialized EBO streams prevent safe additive growth.")
+            raise CourtFormatError("Overlapping specialized EBO streams prevent safe topology rebuilding.")
         pieces.extend((court.data[cursor:start], payload))
         cursor = end
         ends.append(end)
@@ -1636,6 +1986,64 @@ def _rebuild_specialized_topology(
     for location in (20, 24, 28, 32):
         _replace(data, location, "<I", moved(_read(court.data, "<I", location)[0]))
 
+    # Topology growth can occur inside more than one EBO chunk. Rebuild each
+    # chunk size from the same piecewise relocation map used for payloads.
+    # Then relocate every TOC oData value. oData is relative to the TOC record
+    # itself, so the TOC and its target may move by different amounts.
+    old_chunk = _read(court.data, "<I", 16)[0]
+    chunk_count = _read(court.data, "<H", 36)[0]
+    chunk_pairs: list[tuple[int, int, int, int, int]] = []
+    for _chunk_index in range(chunk_count):
+        old_flags, old_ntocs, old_otocs, old_type, old_ver, old_size = _read(
+            court.data, "<HHIIII", old_chunk
+        )
+        new_chunk = moved(old_chunk)
+        new_end = moved(old_chunk + old_size)
+        new_size = new_end - new_chunk
+        _replace(data, new_chunk + 16, "<I", new_size)
+        chunk_pairs.append((old_chunk, new_chunk, old_ntocs, old_otocs, old_size))
+        for _toc_index in range(old_ntocs):
+            old_toc = old_chunk + old_otocs + _toc_index * 16
+            new_toc = moved(old_toc)
+            old_odata = _read(court.data, "<I", old_toc + 12)[0]
+            old_target = old_toc + old_odata
+            new_target = moved(old_target)
+            _replace(data, new_toc + 12, "<I", new_target - new_toc)
+        old_chunk += old_size
+
+    # Raw i8 TOCs describe serialized byte payloads. Their nStructs values
+    # must grow with the actual vertex/index streams; otherwise the game sees
+    # the new buffer header length but an old serializer byte count.
+    data_length_by_old_target = {
+        buffer.data_offset: changed_lengths[buffer.offset]
+        for mesh in court.meshes
+        for batch in mesh.batches
+        for buffer in (batch.positions, batch.normals, batch.uvs, batch.colors, batch.indices)
+        if buffer is not None and buffer.offset in changed_lengths
+    }
+    for old_chunk, new_chunk, old_ntocs, old_otocs, old_size in chunk_pairs:
+        new_size = _read(data, "<I", new_chunk + 16)[0]
+        for _toc_index in range(old_ntocs):
+            old_toc = old_chunk + old_otocs + _toc_index * 16
+            new_toc = moved(old_toc)
+            flags, usd_index, old_nstructs, aligned_size, old_odata = _read(
+                court.data, "<HHIII", old_toc
+            )
+            old_target = old_toc + old_odata
+            if flags == 1 and usd_index == 13 and old_target in data_length_by_old_target:
+                _replace(data, new_toc + 4, "<I", data_length_by_old_target[old_target])
+
+        # Specialized phase 1 has one raw i8 TOC spanning its selector/material
+        # payload. Its byte count changes by exactly the chunk's net growth.
+        if old_ntocs == 1:
+            old_toc = old_chunk + old_otocs
+            new_toc = moved(old_toc)
+            flags, usd_index, old_nstructs, aligned_size, old_odata = _read(
+                court.data, "<HHIII", old_toc
+            )
+            if flags == 1 and usd_index == 13:
+                _replace(data, new_toc + 4, "<I", old_nstructs + (new_size - old_size))
+
     # Every stream retains its complete native header immediately before its
     # payload. Update all headers, descriptors and PCData buffer references.
     header_map: dict[int, int] = {}
@@ -1647,13 +2055,9 @@ def _rebuild_specialized_topology(
                 court.data, "<I", mesh.offset + 116 + batch.batch_index * 48
             )[0]
             descriptor_map[old_descriptor] = moved(old_descriptor)
-            pc_index = {
-                "PLAYER_NORMAL": 15,
-                "BACKBOARD_SHOTCLOCK": 16,
-                "BACKBOARD_REFLECTION": 14,
-                "BACKBOARD_SHADOW": 13,
-            }[batch.profile]
-            old_pc = _read(court.data, "<I", old_descriptor + pc_index * 4)[0]
+            if batch.pcdata_word is None:
+                raise CourtFormatError(f"Topology rebuilding is not yet defined for descriptor {batch.profile!r}.")
+            old_pc = _read(court.data, "<I", old_descriptor + batch.pcdata_word * 4)[0]
             pc_map[old_pc] = moved(old_pc)
             for buffer in (batch.positions, batch.normals, batch.uvs, batch.colors, batch.indices):
                 if buffer is None:
@@ -1680,13 +2084,13 @@ def _rebuild_specialized_topology(
                 value = _read(court.data, "<I", old_descriptor + word_index * 4)[0]
                 if value in targets:
                     _replace(data, descriptor + word_index * 4, "<I", targets[value])
-            pc_index = {
-                "PLAYER_NORMAL": 15,
-                "BACKBOARD_SHOTCLOCK": 16,
-                "BACKBOARD_REFLECTION": 14,
-                "BACKBOARD_SHADOW": 13,
-            }[batch.profile]
-            old_pc = _read(court.data, "<I", old_descriptor + pc_index * 4)[0]
+            if batch.selector_offset is not None:
+                if batch.selector_word is None:
+                    raise CourtFormatError("Selector stream has no structural descriptor field.")
+                _replace(data, descriptor + batch.selector_word * 4, "<I", moved(batch.selector_offset))
+            if batch.pcdata_word is None:
+                raise CourtFormatError(f"Topology rebuilding is not yet defined for descriptor {batch.profile!r}.")
+            old_pc = _read(court.data, "<I", old_descriptor + batch.pcdata_word * 4)[0]
             pc_data = moved(old_pc)
             for word_index in range(8):
                 value = _read(court.data, "<I", old_pc + word_index * 4)[0]
@@ -1695,13 +2099,9 @@ def _rebuild_specialized_topology(
             rebuilt = changed_batches.get((mesh.name, batch.batch_index))
             if rebuilt is not None:
                 count, primitive_count = len(rebuilt.positions), len(rebuilt.strip) - 2
-                count_word = {
-                    "PLAYER_NORMAL": 9,
-                    "BACKBOARD_SHOTCLOCK": 10,
-                    "BACKBOARD_REFLECTION": 8,
-                    "BACKBOARD_SHADOW": 7,
-                }[batch.profile]
-                _replace(data, descriptor + count_word * 4, "<2I", count, primitive_count)
+                if batch.count_word is None or batch.primitive_word != batch.count_word + 1:
+                    raise CourtFormatError("Non-adjacent descriptor counts are not yet rebuildable.")
+                _replace(data, descriptor + batch.count_word * 4, "<2I", count, primitive_count)
                 _replace(data, pc_data + 8, "<I", count)
 
         positions = [
@@ -1726,13 +2126,28 @@ def _rebuild_specialized_topology(
     # are relative to each 16-byte record and can target stream metadata after
     # the expanded payloads. Leaving these displacements unchanged produces an
     # EBO that parses locally but crashes the game loader.
-    preamble_start = _read(court.data, "<I", 16)[0]
+    # Each Geometry export's outer serializer lives at the beginning of the
+    # type-1 chunk that contains that Geometry object.  Do not chain from the
+    # previous mesh's PCData end: that happened to work for the backboard
+    # corpus, but frontend EBOs place successive Geometry exports in separate
+    # phase-0 chunks.
     for mesh in court.meshes:
+        containing = next(
+            (
+                (old_chunk, old_size)
+                for old_chunk, _new_chunk, _ntocs, _otocs, old_size in chunk_pairs
+                if old_chunk <= mesh.offset < old_chunk + old_size
+            ),
+            None,
+        )
+        if containing is None:
+            raise CourtFormatError(f"Object {mesh.name!r} is not contained in an EBO chunk.")
+        preamble_start, _phase0_size = containing
         record_count = _read(court.data, "<I", preamble_start)[0] >> 16
         expected_end = preamble_start + 16 + record_count * 16 + 12
         if expected_end != mesh.offset:
             raise CourtFormatError(
-                f"Object {mesh.name!r} has an unsupported specialized outer serializer."
+                f"Object {mesh.name!r} has an unsupported outer serializer layout."
             )
         for record_index in range(record_count):
             old_record = preamble_start + 16 + record_index * 16
@@ -1743,20 +2158,6 @@ def _rebuild_specialized_topology(
         old_target = old_trailer + _read(court.data, "<i", old_trailer)[0]
         new_trailer = moved(old_trailer)
         _replace(data, new_trailer, "<i", moved(old_target) - new_trailer)
-
-        pc_ends: list[int] = []
-        for batch in mesh.batches:
-            old_descriptor = _read(
-                court.data, "<I", mesh.offset + 116 + batch.batch_index * 48
-            )[0]
-            pc_index = {
-                "PLAYER_NORMAL": 15,
-                "BACKBOARD_SHOTCLOCK": 16,
-                "BACKBOARD_REFLECTION": 14,
-                "BACKBOARD_SHADOW": 13,
-            }[batch.profile]
-            pc_ends.append(_read(court.data, "<I", old_descriptor + pc_index * 4)[0] + 32)
-        preamble_start = max(pc_ends)
 
     # The inner PC serializer is a sequence of 16-byte relocation records in
     # the mesh-to-first-stream region. Word 2 is relative to its own field;
@@ -1771,15 +2172,26 @@ def _rebuild_specialized_topology(
             for buffer in (batch.positions, batch.normals, batch.uvs, batch.colors, batch.indices)
             if buffer is not None
         )
-        for record in range((mesh.offset + 15) & ~15, first_stream - 15, 16):
+        # These records are 16 bytes wide but are NOT guaranteed to start on a
+        # file-global 16-byte boundary.  EA can place a record sequence at a
+        # 4-byte-aligned base (clevbbd has a valid record whose relocation field
+        # is at 0x2318).  The old global-alignment scan silently skipped it and
+        # produced game-crashing files whenever later payloads moved.
+        seen_inner_fields: set[int] = set()
+        for record in range(mesh.offset, first_stream - 15, 4):
             if _read(court.data, "<I", record + 12)[0] not in relocation_kinds:
                 continue
             old_field = record + 8
+            if old_field in seen_inner_fields:
+                continue
             old_target = old_field + _read(court.data, "<i", old_field)[0]
             if not 0 <= old_target < len(court.data):
-                raise CourtFormatError(
-                    f"Object {mesh.name!r} has an invalid specialized inner serializer target."
-                )
+                continue
+            # Serializer relocation targets observed in PC EBOs are aligned.
+            # This rejects accidental kind-looking words inside unrelated data.
+            if old_target & 3:
+                continue
+            seen_inner_fields.add(old_field)
             new_field = moved(old_field)
             _replace(data, new_field, "<i", moved(old_target) - new_field)
 
@@ -1795,7 +2207,11 @@ def _rebuild_specialized_topology(
             i for i, mesh in enumerate(verified.meshes) if mesh.name == batch.mesh_name
         )].batches[batch.batch_index]
         if result.vertex_count != len(rebuilt.positions) or result.triangles != rebuilt.triangles:
-            raise CourtFormatError(f"Additive rebuild verification failed for material {batch.material!r}.")
+            raise CourtFormatError(f"Specialized topology rebuild verification failed for material {batch.material!r}.")
+        if batch.selectors and result.selectors != rebuilt.selectors:
+            raise CourtFormatError(
+                f"Transform-selector rebuild verification failed for material {batch.material!r}."
+            )
     return bytes(data), changed
 
 
@@ -1815,7 +2231,7 @@ def _patch_specialized_batches(
         positions_changed = False
         for batch in mesh.batches:
             if batch.profile == "STATIC_COLOR":
-                raise CourtFormatError("Static and specialized geometry profiles cannot be rebuilt together yet.")
+                raise CourtFormatError("Static and descriptor-driven geometry cannot be rebuilt together yet.")
             rebuilt = edited[mesh.name, batch.batch_index]
             if len(rebuilt.positions) != batch.vertex_count or (
                 batch.uvs is not None and len(rebuilt.uvs) != batch.vertex_count
@@ -1839,6 +2255,12 @@ def _patch_specialized_batches(
                 )
                 if batch.uvs is not None:
                     _replace(data, batch.uvs.data_offset + index * 8, "<2f", *uv)
+                if batch.colors is not None and len(rebuilt.colors) == batch.vertex_count:
+                    rgba = rebuilt.colors[index]
+                    _replace(
+                        data, batch.colors.data_offset + index * 4, "<4B",
+                        rgba[2], rgba[1], rgba[0], rgba[3]
+                    )
             all_positions.extend(rebuilt.positions)
         if positions_changed:
             minimum = tuple(min(position[axis] for position in all_positions) for axis in range(3))
@@ -1862,17 +2284,21 @@ def rebuild_from_batches(
         unexpected = sorted(set(edited) - expected_keys)
         raise CourtFormatError(f"Material groups do not match the EBO template; missing={missing}, unexpected={unexpected}.")
     if any(batch.profile != "STATIC_COLOR" for batch in court.batches):
-        if any(
+        topology_changed = any(
             len(edited[batch.mesh_name, batch.batch_index].positions) != batch.vertex_count
             or edited[batch.mesh_name, batch.batch_index].triangles != batch.triangles
             or len(edited[batch.mesh_name, batch.batch_index].strip) != batch.primitive_count + 2
             for batch in court.batches
-        ):
-            raise CourtFormatError(
-                "Topology changes are not yet safe for specialized EBO models such as "
-                "backboards, balls, trophies, reflections, and shadows. Keep the original "
-                "vertex count and faces; position and UV edits remain supported."
-            )
+        )
+        if topology_changed:
+            unsupported = [batch for batch in court.batches if batch.pcdata_word is None]
+            if unsupported:
+                kinds = sorted({batch.profile for batch in unsupported})
+                raise CourtFormatError(
+                    "Topology rebuilding is not yet defined for descriptor representation(s): "
+                    + ", ".join(kinds)
+                )
+            return _rebuild_specialized_topology(court, edited)
         return _patch_specialized_batches(court, edited)
     replacements: list[tuple[int, int, bytes]] = []
 
@@ -2078,8 +2504,13 @@ def print_summary(court: Court) -> None:
     for mesh in court.meshes:
         print(f"  {mesh.name}")
         for batch in mesh.batches:
+            selector_info = (
+                f"  palette={batch.palette_count} selectors={len(batch.selectors)}"
+                if batch.selectors else ""
+            )
             print(f"    batch {batch.batch_index:02d}  material={batch.material:<5} "
-                  f"vertices={batch.vertex_count:>4}  triangles={len(batch.triangles):>4}")
+                  f"vertices={batch.vertex_count:>4}  triangles={len(batch.triangles):>4}"
+                  f"{selector_info}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -2115,6 +2546,11 @@ def main(argv: list[str] | None = None) -> int:
         court = parse_court(source.read_bytes())
         if args.command == "inspect":
             print_summary(court)
+            selector_reports = validate_transform_selectors(court)
+            if selector_reports:
+                print("Transform selectors:")
+                for report in selector_reports:
+                    print(f"  PASS  {report}")
         elif args.command == "export":
             export_obj(court, args.obj, flip_v=not args.no_flip_v, texture_extension=args.texture_extension)
             print_summary(court)
