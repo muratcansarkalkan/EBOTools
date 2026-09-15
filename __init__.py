@@ -1,31 +1,35 @@
-"""NBA Live 2005/2006 player heads, environments, and static models for Blender."""
+"""NBA Live 2005/2006 EBO Tools for Blender."""
 
 bl_info = {
-    "name": "NBA Live EBO Tools",
+    "name": "NBA Live Environment Tools",
     "author": "EBO Tools 2026",
-    "version": (0, 6, 4),
+    "version": (1, 4, 8),
     "blender": (4, 2, 0),
     "location": "3D Viewport > Sidebar > NBA Live",
-    "description": "Edit NBA Live player heads, environments, static models, EBO materials, and FSH textures",
+    "description": (
+        "NBA Live stadium/court, backboard, net and EBO environment tools"
+    ),
     "category": "Import-Export",
 }
 
 from . import blender_addon
-from . import face_tools
-from . import body_morph_tools
-from . import multi_morph_core
-from . import multi_morph_tools
+from . import synthetic_static_blender
+from . import backboard_blender
+from . import net_blender
+from . import player_morph_blender
 
 
 def register():
     blender_addon.register()
-    face_tools.register()
-    body_morph_tools.register()
-    multi_morph_tools.register()
+    synthetic_static_blender.register()
+    backboard_blender.register()
+    net_blender.register()
+    player_morph_blender.register()
 
 
 def unregister():
-    multi_morph_tools.unregister()
-    body_morph_tools.unregister()
-    face_tools.unregister()
+    player_morph_blender.unregister()
+    net_blender.unregister()
+    backboard_blender.unregister()
+    synthetic_static_blender.unregister()
     blender_addon.unregister()

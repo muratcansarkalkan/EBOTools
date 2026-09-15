@@ -76,21 +76,6 @@ def _as_path(value: str) -> Path | None:
     return Path(bpy.path.abspath(value)).resolve() if value else None
 
 
-def _gx_path(context) -> Path:
-    addons = context.preferences.addons
-    entry = addons.get(__package__)
-    if entry is None:
-        entry = addons.get(__package__.split(".")[-1])
-    preferences = entry.preferences if entry is not None else None
-    path = _as_path(getattr(preferences, "gx_path", ""))
-    if path is None:
-        raise fsh_archive.FshError(
-            "Set GX Executable once in Edit > Preferences > Add-ons > "
-            "NBA Live Environment Tools."
-        )
-    return path
-
-
 def _game_to_blender(position: tuple[float, float, float]) -> tuple[float, float, float]:
     x, y, z = position
     return x, -z, y
@@ -132,7 +117,7 @@ def _find_texture(
         candidates.append(extra_directory / f"{working_name}.png")
     if texture_root:
         candidates.append(texture_root / f"{working_name}.png")
-    # EBO names omit the GX input slot used by FSH directory entries. Resolve
+    # EBO names omit the FSH directory slot used by FSH directory entries. Resolve
     # ``ball`` to the canonical safe filename ``texture0-ball.png`` instead of
     # creating and attaching a misleading ``ball.png`` alias.
     qualified_matches: list[Path] = []
@@ -367,16 +352,12 @@ def import_environment(context, filepath: str, settings) -> tuple[object, int, i
         texture_root = source.parent / "nba_live_textures"
 
     if settings.extract_fsh and archives:
-        try:
-            gx = _gx_path(context)
-            for archive in archives:
-                try:
-                    _diagnostic(f"Extracting FSH: {archive.path.name}")
-                    fsh_archive.extract_archive(archive, gx, texture_root)
-                except (fsh_archive.FshError, OSError) as exc:
-                    _diagnostic(f"FSH extraction failed for {archive.path.name}: {exc}")
-        except (fsh_archive.FshError, OSError) as exc:
-            _diagnostic(f"FSH extraction unavailable; placeholders will be used: {exc}")
+        for archive in archives:
+            try:
+                _diagnostic(f"Extracting FSH natively: {archive.path.name}")
+                fsh_archive.extract_archive(archive, texture_root)
+            except (fsh_archive.FshError, OSError) as exc:
+                _diagnostic(f"Native FSH extraction failed for {archive.path.name}: {exc}")
 
     asset_name = fsh_archive.asset_base_name(source)
     collection = bpy.data.collections.new(source.stem)
@@ -941,7 +922,6 @@ def export_environment(context, filepath: str, settings) -> tuple[int, list[Path
 
     rebuilt_archives: list[Path] = []
     if settings.repack_fsh:
-        gx = _gx_path(context)
         root = Path(collection["nba_live_texture_root"])
         archives = tuple(
             fsh_archive.read_fsh(value)
@@ -972,42 +952,12 @@ def export_environment(context, filepath: str, settings) -> tuple[int, list[Path
                 fsh_archive.repack_archive(
                     archive,
                     root / archive.path.stem,
-                    gx,
                     destination.parent,
                     required_names=frozenset(required[archive.path.name]),
                 )
             )
     destination.write_bytes(updated)
     return changed_batches, rebuilt_archives
-
-
-class NBAEnvironmentPreferences(bpy.types.AddonPreferences):
-    bl_idname = __package__
-
-    gx_path: StringProperty(
-        name="GX Executable",
-        description="Persistent path to gx.exe, used to extract and rebuild FSH archives",
-        subtype="FILE_PATH",
-    )
-    base_2005_path: StringProperty(
-        name="NBA Live 2005 Head Base EBO",
-        description="Optional override for the bundled base_lodB_05.ebo",
-        subtype="FILE_PATH",
-    )
-    base_2006_path: StringProperty(
-        name="NBA Live 2006 Head Base EBO",
-        description="Optional override for the bundled base_lodB.ebo",
-        subtype="FILE_PATH",
-    )
-
-    def draw(self, context):
-        layout = self.layout
-        layout.label(text="FSH texture extraction and repacking")
-        layout.prop(self, "gx_path")
-        layout.separator()
-        layout.label(text="Player-head base models (bundled defaults)")
-        layout.prop(self, "base_2005_path")
-        layout.prop(self, "base_2006_path")
 
 
 class NBAEnvironmentMaterialSettings(bpy.types.PropertyGroup):
@@ -1046,12 +996,12 @@ class NBAEnvironmentSettings(bpy.types.PropertyGroup):
     )
     extract_fsh: BoolProperty(
         name="Extract FSH on Import",
-        description="Use GX to unpack the main and VRAM FSH archives automatically",
+        description="Extract DXT1/DXT3/DXT5 textures from the main and VRAM FSH archives natively",
         default=True,
     )
     repack_fsh: BoolProperty(
         name="Repack FSH on Export",
-        description="Rebuild the original main and VRAM texture archives with GX",
+        description="Rebuild the original main and VRAM texture archives natively",
         default=False,
     )
     new_material_name: StringProperty(
@@ -1363,8 +1313,11 @@ class NBA_OT_visualize_selectors(bpy.types.Operator):
         return {"FINISHED"}
 
 
+
+
 class NBA_PT_environment_panel(bpy.types.Panel):
     bl_label = "NBA Live Environments"
+    bl_options = {'DEFAULT_CLOSED'}
     bl_idname = "NBA_PT_environment_panel"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
@@ -1387,6 +1340,7 @@ class NBA_PT_environment_panel(bpy.types.Panel):
         box.operator("nba_live.export_environment", icon="EXPORT")
         box.operator("nba_live.import_fbx", icon="IMPORT")
         box.operator("nba_live.export_fbx", icon="EXPORT")
+
 
         collection = _active_collection(context)
         if collection:
@@ -1416,7 +1370,6 @@ def _export_menu(self, context):
 
 
 CLASSES = (
-    NBAEnvironmentPreferences,
     NBAEnvironmentMaterialSettings,
     NBAEnvironmentSettings,
     NBA_OT_import_environment,

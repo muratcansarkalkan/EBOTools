@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 id = "nba_live_environment_tools"
-version = "0.7.0-alpha.5"
-name = "NBA Live EBO Tools"
+version = "1.4.8-alpha"
+name = "NBA Live Environment Tools"
 tagline = "Edit NBA Live player heads, environments, models, and textures"
 maintainer = "EBO Tools 2026"
 type = "add-on"
@@ -10,4 +10,4 @@ license = ["SPDX:GPL-3.0-or-later"]
 tags = ["Import-Export", "Game Engine", "Material"]
 
 [permissions]
-files = "Read and write EBO models, head bases, FSH archives, extracted textures, and GX executable"
+files = "Read and write EBO models, FSH archives, extracted textures"

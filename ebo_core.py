@@ -918,7 +918,7 @@ class NewMaterialBatch:
 
 
 def validate_material_name(name: str) -> str:
-    """EBO strings and GX image names must remain safe ASCII file basenames."""
+    """EBO strings and FSH image names must remain safe ASCII file basenames."""
     if not isinstance(name, str) or not name or name != name.strip():
         raise CourtFormatError("A material/texture name cannot be empty or contain surrounding whitespace.")
     try:
