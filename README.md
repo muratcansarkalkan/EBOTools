@@ -1,11 +1,11 @@
-# NBA Live Environment Tools v1.4.8 Alpha
+# NBA Live Environment Tools v1.5
 
 Combined Blender add-on for importing, editing, and exporting selected NBA
 Live 2005 and NBA Live 06 player heads, environment/static EBO models, and FSH
 textures.
 
-This remains an alpha release. Keep backups of every original game file and
-test exported assets individually in-game.
+This is the v1.5 release. Keep backups of original game files and test edited
+assets in-game before replacing your working copies.
 
 ## Supported workflows
 
@@ -29,7 +29,7 @@ test exported assets individually in-game.
 ## Installation
 
 Install the extension through **Edit > Preferences > Add-ons > Install from
-Disk**, then enable **NBA Live EBO Tools**.
+Disk**, then enable **NBA Live Environment Tools**.
 
 No external GX/Gimex executable is required. Existing FSH archives and newly created
 stadium/court/backboard FSH archives are handled natively.

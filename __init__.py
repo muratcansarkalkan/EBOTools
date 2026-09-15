@@ -3,7 +3,7 @@
 bl_info = {
     "name": "NBA Live Environment Tools",
     "author": "EBO Tools 2026",
-    "version": (1, 4, 8),
+    "version": (1, 5, 0),
     "blender": (4, 2, 0),
     "location": "3D Viewport > Sidebar > NBA Live",
     "description": (
