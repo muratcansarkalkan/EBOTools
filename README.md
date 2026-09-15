@@ -1,91 +1,108 @@
 # NBA Live Environment Tools v1.5
 
-Combined Blender add-on for importing, editing, and exporting selected NBA
-Live 2005 and NBA Live 06 player heads, environment/static EBO models, and FSH
-textures.
+Blender add-on for editing and creating NBA Live 2005 / NBA Live 06 PC EBO assets and their related FSH textures.
 
-This is the v1.5 release. Keep backups of original game files and test edited
-assets in-game before replacing your working copies.
+The tools are available in the **NBA Live** tab of the Blender 3D Viewport sidebar. All main panels are collapsed by default.
 
-## Supported workflows
+## Requirements
 
-- NBA Live 2005/06 high-detail player head EBO models
-- Player-head vertex-position editing with original EA vertex IDs preserved
-- Player-head source-file verification and overwrite protection
-- NBA Live 2005/06 court and stadium EBO models
-- Transparent stadium parts
-- Adding, renaming, and removing stadium EBO material groups
-- Adding new stadium texture names
-- Selecting the main or `_vram` FSH archive for each new texture
-- Championship trophy and NBA Live 2005/06 ball models
-- Main, transparent, reflection, shadow, and playground backboard variants
-- Existing vertex-position and UV editing
-- Topology rebuilding for decoded static court and stadium geometry
-- Native main and `_vram` FSH extraction and repacking (DXT1/DXT3/DXT5)
-- Slot-qualified FSH names such as `texture0:ball`
-- Automatic RGB-to-RGBA PNG normalization before native FSH packing
-- Automatic placeholder PNGs when textures or archives cannot be resolved
+- Blender 4.2 or newer
+- NBA Live 2005 or NBA Live 06 PC assets
+- Original game files should always be backed up before editing
+
+No GX/Gimex installation is required. FSH extraction, decoding, creation, and repacking are handled natively by the add-on.
 
 ## Installation
 
-Install the extension through **Edit > Preferences > Add-ons > Install from
-Disk**, then enable **NBA Live Environment Tools**.
+1. Open Blender.
+2. Go to **Edit > Preferences > Add-ons**.
+3. Choose **Install from Disk**.
+4. Select the NBA Live Environment Tools ZIP.
+5. Enable **NBA Live Environment Tools**.
+6. Open the 3D Viewport sidebar and select the **NBA Live** tab.
 
-No external GX/Gimex executable is required. Existing FSH archives and newly created
-stadium/court/backboard FSH archives are handled natively.
+## Included tools
 
-The Player / Coach Morph EBO workflow asks you to choose the base EBO directly.
-No base EBO files are bundled with the add-on.
+The add-on is organized into five main panels:
 
-The tools appear under the **NBA Live** tab in the 3D Viewport sidebar.
+- **NBA Live Environments** — import and export existing court, stadium, and compatible EBO models; manage related FSH textures; FBX bridge.
+- **Stadium / Court EBO** — create new stadium and court EBO/FSH packages from Blender geometry.
+- **Backboard EBO** — edit or build NBA Live 2005 / 06 backboard packages, including rigid weights and dynamic shot-clock materials.
+- **Net EBO** — edit and export the NBA Live 06 weighted net model.
+- **Player / Coach Morph EBO** — load a user-selected base player/coach EBO, apply a morph EBO, edit it in Blender, and export the result.
 
-## Player heads
+---
 
-Use the **EBO Head Tools** panel:
+# Existing EBO import / export
 
-1. Select NBA Live 2005 or NBA Live 2006.
-2. Import the original player head EBO.
-3. Move existing vertices in Blender.
-4. Export to a new EBO filename.
+Use **NBA Live Environments** for existing court, stadium, transparent stadium, and other compatible EBO assets.
 
-The imported mesh remembers its game version, original player EBO, source-file
-hash, base model, original EA vertex IDs, and original vertex positions.
+## Import
 
-Player heads are deliberately fixed-topology:
+1. Set the FSH/archive directories if required.
+2. Enable **Extract FSH on Import** if PNG textures have not already been extracted.
+3. Choose **Import NBA Live EBO**.
+4. Edit the imported mesh, UVs, vertex colors, and supported material assignments.
 
-- NBA Live 2005 requires 734 rendered vertices and uses a sparse coordinate
-  morph stream.
-- NBA Live 2006 requires 733 rendered vertices and uses a dense coordinate
-  morph stream.
-- Do not add, delete, merge, subdivide, or reorder head vertices.
-- Export never overwrites the original player EBO.
-- NBA Live 2005 edits that require expanding an omitted sparse coordinate are
-  rejected instead of resizing and corrupting the file.
+The importer preserves the structural metadata required to rebuild supported EBO geometry.
 
-## Importing an EBO
+### Important
 
-1. Keep the EBO beside its corresponding `.fsh` and `_vram.fsh` files, or set
-   their directory in the import panel.
-2. Enable **Extract FSH on Import** when the PNG files have not already been
-   extracted.
-3. Import the EBO.
-4. Edit the imported objects, UV maps, supported geometry, or materials.
+Do not casually rename or delete imported objects. Their stored metadata and object identity may be required during export.
 
-Do not delete or rename imported Blender objects. Their names identify the
-original EBO geometry records during export.
+For model families with specialized serializer data, preserve the source structure unless the dedicated tool explicitly supports rebuilding it.
 
-If an FSH archive is absent, invalid, uses an unsupported texture format, or is missing a required
-texture, import continues with a 64×64 magenta-and-black placeholder PNG. The
-placeholder is placed in the normal extracted-texture directory and attached
-to the Blender material. Existing PNG files are never overwritten.
+## Export
 
-When the FSH directory supplies a slot-qualified name, the placeholder keeps
-its safe working filename. For example, `texture0:ball` becomes
-`texture0-ball.png`.
+Choose **Export NBA Live EBO** from the same panel.
 
-## EBO material naming
+Enable **Repack FSH on Export** when edited PNG textures should be written back into the corresponding FSH archives.
 
-Imported materials use:
+The exporter is designed to reject unsupported or structurally unsafe changes rather than silently produce a damaged EBO.
+
+---
+
+# FSH texture support
+
+FSH handling is native. GX/Gimex is no longer used.
+
+## Native extraction formats
+
+The current decoder supports:
+
+- DXT1 / `0x60`
+- DXT3 / `0x61`
+- DXT5 / `0x62`
+- ARGB4444 / `0x6D`
+- RGB565 / `0x78`
+- BGRA32 / `0x7D`
+- ARGB1555 / `0x7E`
+- BGR24 / `0x7F`
+
+Unsupported indexed or unfamiliar FSH formats are reported instead of being decoded incorrectly.
+
+## Native creation
+
+New textures are encoded as:
+
+- **DXT1** when the PNG is fully opaque
+- **DXT5** when the PNG contains non-opaque alpha
+
+Some specialized assets may use a dedicated DXT3 path where required by their known game format.
+
+## Working PNG filenames
+
+FSH TextureNames are preserved internally. Characters that are inconvenient in filenames, such as `:`, may be converted to a safe working filename while extracted and restored when the archive is rebuilt.
+
+If a required texture cannot be resolved during import, the add-on may create a visible placeholder texture so the model can still be inspected in Blender.
+
+---
+
+# EBO material naming
+
+Material names carry the texture name and, where applicable, the RenderMethod/RMS type.
+
+Typical imported form:
 
 ```text
 EBO.<texture> [<RMS type>]
@@ -98,17 +115,9 @@ EBO.gcon [TextureStadium]
 EBO.odrn [ScrollTextureDim]
 ```
 
-The text before the brackets is the texture name. The bracketed text is the
-RMS render-method type; it is not another texture name.
+For environment editing, the text before the brackets is the FSH TextureName. The value in brackets identifies the RenderMethod profile.
 
-For a new stadium material, create a normal Blender material, give it an EBO
-name, and assign at least one face. A readable RMS-type form is accepted:
-
-```text
-EBO.new0 [TextureStadium]
-```
-
-The explicit form selects both a template and destination archive:
+When creating new environment material groups, the extended form can also specify the template and destination archive:
 
 ```text
 EBO.<new texture>.<template texture or RMS type>.<main|vram>
@@ -121,272 +130,280 @@ EBO.new0.TextureStadium.main
 EBO.animated_ad.ScrollTextureDim.vram
 ```
 
-The template may be an existing texture/material-group name on that object or
-an RMS type shown in brackets.
+Use an existing known-good material/RMS as the template whenever possible.
 
-Removing every face assigned to an original stadium material removes that
-material group during export, provided the object retains at least one
-original material group.
+---
 
-## FSH textures
+# Stadium / Court EBO creator
 
-Enable **Repack FSH on Export** to rebuild the asset's archives.
+Use **Stadium / Court EBO** to create new static packages from Blender meshes.
 
-- Main and `_vram` textures are staged separately.
-- `:` is replaced with `-` only in working PNG filenames and restored inside
-  the repacked archive.
-- RGB PNG files are normalized to RGBA before native DXT packing.
-- Each archive is rebuilt from a filtered temporary directory, preventing
-  stale PNGs from leaking between main and `_vram` archives.
-- Placeholder PNGs may be replaced normally before repacking.
+## Stadium
 
-## Specialized models
+Expected collection roles are:
 
-Balls, trophies, backboards, reflection models, and shadow models contain
-specialized runtime and serializer data beyond ordinary static stadium
-geometry.
+```text
+std
+std_trans
+std_highref   (optional reflection collection)
+```
 
-For these models, the add-on currently supports only fixed-topology edits:
+Select the meshes that should be exported and choose **Stadium** mode.
 
-- Move existing vertices
-- Edit existing UV coordinates
-- Preserve the original objects, material groups, vertex counts, and faces
+The exporter creates the EBO and associated native FSH files from the selected Blender geometry and materials.
 
-Adding, deleting, or rewiring vertices/faces is deliberately rejected before
-an EBO is written. Experimental additive backboard rebuilds either rendered
-distorted geometry or crashed NBA Live, even when their visible stream data
-and known serializer pointers validated. They are therefore not part of this
-release.
+### Stadium material syntax
 
-Backboard formats confirmed for fixed-topology import/export include normal,
-transparent, reflection, shadow, shot-clock, and playground declaration
-variants. Playground backboards may use declaration variant `3`; this is a
-normal-bearing geometry declaration, not confirmed skeletal weight data.
+Use:
 
-### Backboard transform-selector diagnostics (0.6.1)
+```text
+texture [RMS]
+```
 
-When a specialized descriptor contains a self-validating per-vertex `i16`
-local-palette selector, the importer now exposes it as the POINT-domain integer
-attribute `eagl_transform_selector`. The corresponding local palette size is
-exposed as `eagl_palette_size`. Detection is conservative: the array is accepted
-only when it contains exactly one readable value per vertex and every selector
-is smaller than the declared palette size. This makes the previously hidden
-backboard companion stream inspectable in Blender without changing the stable
-fixed-topology writer.
+Example:
 
-Topology-changing export remains disabled in this release. The new attributes
-are diagnostic groundwork for a future writer that can rebuild selector data
-safely instead of producing structurally plausible but invalid backboards.
+```text
+0036 [ScrollTextureDim]
+```
 
-## Current limitations
+Supported RMS profiles are derived from the tool's known NBA Live RenderMethod definitions.
 
-- Creating completely new named EBO objects is unsupported.
-- Specialized-model topology changes are unsupported.
-- Existing FSH extraction/repacking is native for DXT1 (0x60), DXT3 (0x61), and DXT5 (0x62).
-- Player accessory import/export is not included in this release.
-- Unfamiliar EBO or RMS layouts may be rejected rather than exported unsafely.
+## Court
 
-## Recommended testing sequence
+Choose **Court** mode and select NBA Live 2005 or NBA Live 06.
 
-1. Choose the matching game version and import an untouched model.
-2. Export without edits.
-3. Confirm that it loads in-game.
-4. Make one small UV edit and test again.
-5. Make one small vertex-position edit and test again.
-6. For static courts/stadiums only, proceed to material or topology changes.
+Known working court Geometry names include:
 
-If a model fails, retain the original EBO, exported EBO, relevant FSH files,
-the `.blend` file, and the exact Blender material names used.
+```text
+aalogo1Shape
+ccskirt1Shape
+floor4Shape
+```
 
-## Suggested next research target
+These names are warnings/recommendations, not destructive automatic requirements. The add-on does not rename your geometry automatically.
 
-FSH extraction/repacking no longer requires an external GX/Gimex executable.
+The default court RenderMethod is the appropriate NBA court profile for the selected game.
 
-### 0.6.1 backboard selector work
+---
 
-- Adds **Visualize Transform Selectors** in the NBA Live sidebar when the active imported mesh contains `eagl_transform_selector`. It creates a temporary point-color diagnostic layer and switches the 3D viewport to vertex colors so local selector groups can be seen directly on the model.
-- Specialized additive topology export now carries `eagl_transform_selector` into rebuilt EBO data, validates every value against the material's `eagl_palette_size`, grows the raw i16 selector stream with the vertex stream, relocates its descriptor pointer, and verifies the rebuilt selector stream by reparsing the finished EBO.
-- Selector value is part of export vertex identity, preventing Blender UV/color splitting from accidentally merging vertices that have different transform assignments.
-- If a selector-bearing material is exported without the selector attribute, or contains an out-of-range selector, export aborts instead of writing a potentially crashing EBO.
+# Backboard EBO
 
+The dedicated **Backboard EBO** panel supports NBA Live 2005 and NBA Live 06 backboard workflows.
 
-### 0.6.2 experimental arbitrary backboard topology
+Backboards contain game-specific skinning, serializer, shot-clock, reflection, transparency, and material behavior. Do not assume a 2005 backboard can be used as a 2006 template or vice versa.
 
-- Removes the appended-faces-only restriction for specialized backboard batches.
-- Extrusion, deletion and face rewiring are accepted for controlled testing.
-- Rebuilds the current triangle strip from Blender geometry.
-- Rebuilds position, normal, UV, index and detected transform-selector payloads.
-- Supports stream growth/shrinkage while relocating the known serializer pointers.
-- Selector-bearing materials still require a valid `eagl_transform_selector` on every output vertex.
-- This remains experimental: test on copies and start with a very small extrusion.
+## Existing backboard
 
+For an imported working backboard:
 
-### 0.6.3 specialized topology test routing fix
+1. Enable **Backboard Mode**.
+2. Select the correct game.
+3. Use **Prepare Imported Backboard** when needed.
+4. Preserve the existing Geometry/material structure unless intentionally rebuilding it.
+5. Export with a matching reference EBO when the workflow requires one.
 
-0.6.2 contained the generalized specialized-topology rebuilder but the public
-`rebuild_from_batches()` entry point still had the older safety gate, so Blender
-never reached the new code. 0.6.3 removes that stale gate:
+## Rigid backboard weights
 
-- unchanged specialized topology -> conservative in-place patcher;
-- changed specialized topology -> selector-aware `_rebuild_specialized_topology()`;
-- static-color geometry -> existing static topology writer.
+The tool uses semantic rigid groups:
 
-This is still an experimental backboard topology path.
+```text
+Support  -> bone 1
+Board    -> bone 2
+Rim      -> bone 3
+```
 
+The panel provides tools to create, assign, transfer, preserve, and validate these weights.
 
-### 0.7.0-alpha.1 strip-preserving topology experiment
+## Dynamic shot clock
 
-- Additive specialized edits preserve EA's original triangle strip exactly and append only new faces.
-- Destructive/rewired edits use adjacency-connected strip runs rather than rebuilding every face as an isolated strip.
-- Degenerate bridges are inserted only when another triangle cannot continue the current strip edge.
-- Selector-aware specialized stream rebuilding from 0.6.3 remains enabled.
-- This specifically targets the excessive index-strip growth observed in the crashing topology test.
+The tool supports the six dynamic shot-clock materials used by the backboard:
 
+- four `time` materials
+- two `tnum` materials
 
-## 0.7.0-alpha.1 generic descriptor work
+The dedicated tagging and validation tools assign the expected UV indices and Board ownership.
 
-The importer now recognizes skinned Geometry from the serialized buffer structure
-(position/normal/UV/index headers and strides) instead of limiting palette counts
-to a few known backboard signatures. Vertex and primitive counts are derived from
-the actual PC vertex/index buffer lengths when parsing these descriptors.
+## Backboard package export
 
-This expands import coverage to the tested NBA Live 2005/2006 face LOD, net, and
-2005 backboard samples while retaining the existing 0.6.6 topology/relocation
-work. Export of newly discovered model families should still be treated as
-experimental until each family's serializer semantics are validated in game.
+NBA Live 06 package collections:
 
+```text
+bbd
+bbd_trans
+bbd_refl
+```
 
-## 0.7.0-alpha.2 frontend Geometry research
+NBA Live 2005 additionally requires:
 
-- Adds structural recognition for APT/frontend Geometry using position (12-byte), Colour (4-byte), and index (2-byte) PC buffers.
-- Tested parser coverage now includes `score.ebo`, `slctjrsy.ebo`, `lc_l.ebo`, and `ANNOCIO.ebo`.
-- Handles the observed compound frontend material record sufficiently to import its first structural draw without asset-name special cases.
-- Frontend UV placement remains RenderMethod-driven; these descriptors do not carry the ordinary 8-byte UV buffer used by stadium/backboard geometry.
-- Existing 2005/2006 face, net, backboard and stadium parser regressions remain covered.
-- `dunkstd` research samples expose TextureStadium, TextureGlow (2005), TextureScaleOffsetUV, and ScrollTextureDim RenderMethods; no special parser branch was added for them.
+```text
+bbd_shad
+```
 
-Frontend export should be treated as experimental until RenderMethod-driven frontend placement and compound-draw serialization are fully mapped.
+The package exporter can create the model set and associated FSH archives.
 
+## ScrollTextureDim
 
-## 0.7.0-alpha.8 structural descriptor metadata
+Backboard materials may use the same bracketed RMS convention as stadium materials.
 
-Exporter-side descriptor fields are now carried by each parsed batch as structural
-metadata (PCData, count, primitive, palette and selector word positions) instead of
-being recovered from a profile-name switch. This keeps binary relocation/rebuild
-logic independent from model names and RenderMethod labels.
+Example:
 
-Frontend position and BGRA colour streams can now be patched safely when topology is
-unchanged. Frontend topology growth is deliberately rejected until its serializer
-registration is mapped; existing skinned/topology-capable representations retain the
-0.6.6 relocation path. Stadium TextureGlow, TextureScaleOffsetUV and ScrollTextureDim
-samples remain ordinary static Geometry and are included as regression material.
+```text
+odrn [ScrollTextureDim]
+```
 
+This exports the material with:
 
-## 0.7.0-alpha.8 frontend topology fix
+```text
+gScrollTextureDim_RMRuntime
+```
 
-Frontend `Position + Colour + Index` descriptors now discover their PCDataBuffers
-field structurally. Compound frontend draw records can place this pointer at
-different descriptor words, so it is no longer selected from a profile-name map.
-Frontend vertex-count and primitive-count fields are recorded directly from the
-descriptor. This removes the `FRONTEND_COLOR` topology-rebuild KeyError and lets
-the generic relocation path operate on frontend stream growth.
+Shot-clock-specific materials retain their required game-specific runtime and take precedence over the generic tag.
 
-Frontend colour streams remain BGRA byte streams and are rebuilt alongside
-positions and indices.
+---
 
+# Net EBO
 
-## 0.7.0-alpha.8 outer serializer discovery
+The **Net EBO** panel currently targets the NBA Live 06 weighted basketball net.
 
-Topology rebuilding now locates each Geometry export's outer relocation serializer
-from the type-1 EBO chunk that actually contains that Geometry object. Frontend
-EBOs commonly store successive Geometry exports in separate phase-0 chunks, so
-the older backboard-derived method of chaining from the previous PCData end was
-invalid for files such as score.ebo.
+The workflow supports:
 
-A synthetic frontend topology-growth regression (21 -> 24 vertices, 11 -> 12
-triangles) now rebuilds and reparses successfully.
+- recovering stock net weights
+- creating semantic net groups
+- assigning Top / Upper / Body / Bottom regions
+- transferring and validating rigid weights
+- width and length scaling
+- exporting the rebuilt `netShape`
 
+The known texture name is `tnet` and the exporter uses the NBA Live 06 net/backboard skin runtime expected by the game.
 
-## 0.7.0-alpha.8 frontend strip/color probe
+---
 
-Frontend additive topology now joins adjacent new triangles into compact triangle-strip
-runs before bridging them to the original EA strip. This avoids the backboard-oriented
-five-index bridge for every added face. Vertex-color extraction was also corrected so
-RebuiltBatch keeps RGBA and the EBO writer performs the single required BGRA conversion.
+# Player / Coach Morph EBO
 
+This workflow does not use bundled base models.
 
-## 0.7.0-alpha.8 frontend topology encoding
+The user selects the correct **base EBO** directly in the **Player / Coach Morph EBO** panel.
 
-The alpha.6 compact append path could be bypassed when Blender re-ordered or
-re-oriented imported triangles, causing fallback to the older per-triangle
-backboard strip builder. Frontend topology changes now always rebuild all
-triangles into compact connected strip runs. Fixed-topology frontend exports
-continue preserving the original EA strip byte-for-byte.
+Typical workflow:
 
+1. Choose **Base Model** and select the correct original player/coach EBO.
+2. Load the morph/source EBO.
+3. Edit the loaded geometry directly in Blender.
+4. Keep topology and vertex order unchanged.
+5. Export the edited morph EBO.
 
-## 0.7.0-alpha.8 — Morph groundwork
+The panel reports which Geometry objects are mapped, which source Geometry contains morph data, and which objects have been edited in Blender.
 
-Adds `morph_probe.py`, a read-only structural probe for the next generalized
-morph workflow. It accepts an arbitrary base LOD EBO plus a player morph EBO,
-uses the existing generic Geometry parser for the base, inventories Morph
-exports, and locates known MorphStreamHeader records without hard-coding a
-year, LOD, player name, or vertex count.
+### Important limitations
 
-Target workflow under implementation:
-1. Load base_lodB/C/D EBO.
-2. Load a matching player/body morph EBO.
-3. Decode logical morph streams and map them onto rendered Geometry vertices.
-4. Edit the displayed morphed mesh in Blender.
-5. Collapse edited render copies back to logical morph vertices.
-6. Rewrite the original morph EBO while leaving the base EBO unchanged.
+- Keep vertex order unchanged.
+- Do not add/delete/reorder vertices unless a particular workflow explicitly supports it.
+- Player accessory import/export is intentionally not included in v1.5.
 
-The older head editor remains intact in this alpha; the generalized body-morph
-UI is not enabled until the render-to-logical mapping and sparse stream writer
-validate across the supplied 2005/2006/2008 corpus.
+---
 
+# FBX bridge
 
-## 0.7.0-alpha.10 — Named morph target pairing
+The **NBA Live Environments** panel also exposes Blender's FBX import/export as a convenience when moving geometry through an external modeling workflow.
 
-The morph layer now inventories every `Morph` export in the selected partial
-morph EBO and maps `<target>_morphs` to Geometry `<target>` in the selected
-`base_lodX.ebo`. Missing targets are intentionally left as unchanged base
-geometry.
+FBX does not replace the EBO metadata stored by the native importer. When editing an existing NBA Live asset, preserve the original imported collection and metadata needed for final EBO export.
 
-Examples include `BasePlyr_morphs -> BasePlyr`, `headAShape_morphs ->
-headAShape`, `jerseyShape_morphs -> jerseyShape`, and `shortsShape_morphs ->
-shortsShape`.
+---
 
-This alpha keeps the proven BasePlyr editor/export path active while exposing
-the complete target inventory needed to bind the remaining targets to their
-individual MorphStreamHeaders and EA render-to-logical mappings. It does not
-silently apply an unmatched stream to BasePlyr.
+# Vertex colors, UVs, transparency, and topology
 
+For supported environment/static Geometry, the tools preserve and rebuild the data needed by the tested NBA Live EBO formats, including:
 
-## 0.7.0-alpha.13 — EA per-batch morph mappings
+- positions
+- normals where present
+- UV coordinates
+- vertex colors where present
+- material groups
+- triangle/index data
+- transparent geometry
+- known descriptor and relocation metadata
 
-BasePlyr no longer relies on position deduplication when the shipped base EBO
-provides EA's mapping records. The mapping representation can cover an entire
-Geometry target (such as 734->573 head shapes) or individual render batches.
+Topology changes are supported where the relevant model family has a validated rebuild path. Specialized/skinned model families may impose stricter rules.
 
-Confirmed examples:
-- 2005 BasePlyr: 144 + 506 render vertices -> 592 logical vertices.
-- 2006 BasePlyr: 144 + 144 + 583 -> 798 logical vertices.
-- 2008 BasePlyr: 144 + 144 + 578 -> 798 logical vertices.
+When the exporter rejects a topology or serializer change, treat that as a safety check rather than bypassing it.
 
-The per-batch tables collectively cover every logical index exactly once
-(allowing expected render duplicates). The importer reports
-`APPLIED [EA_BATCH_TABLES]` when this authoritative path is used.
+---
 
+# Transform-selector diagnostics
 
-## 0.7.0-alpha.15 — Sparse morph repacking
+Some skinned/specialized EBO Geometry contains a per-vertex transform selector used with a local bone palette.
 
-Fixed-topology export can now move a coordinate that was omitted by the source
-sparse morph. The writer reassigns EA's existing explicitly-stored zero slots,
-rebuilds the sparse instruction mask, and rewrites it in place while preserving
-the original MorphData allocation. No EBO relocation is required for ordinary
-vertex edits that fit the source stream's fixed sparse capacity.
+When available, the importer exposes this information as Blender metadata and the **Visualize Transform Selectors** operator can color the mesh by selector group for inspection.
 
-Regression-tested by deliberately editing omitted BasePlyr components in the
-supplied 2005 Oliver Miller, 2005 skinny, and 2008 Badavis morphs. All rendered
-copies belonging to the edited logical vertex were moved together, then the
-morph was exported and re-imported; all three round trips reproduced the edit.
+This is primarily a diagnostic feature for specialized models and should not be treated as a generic material/color layer.
+
+---
+
+# Recommended workflow
+
+For an unfamiliar model:
+
+1. Keep an untouched backup of the original EBO and FSH files.
+2. Import the model.
+3. Export it once without edits.
+4. Test the untouched round-trip in-game.
+5. Make one small change at a time.
+6. Test again before making larger topology or material changes.
+
+For known supported creators such as stadiums, courts, backboards, and the NBA Live 06 net, use the dedicated panel rather than forcing the asset through a generic workflow.
+
+---
+
+# Known limitations
+
+- The primary tested game targets are NBA Live 2005 and NBA Live 06 PC.
+- Player accessory import/export is not included.
+- Some uncommon/paletted FSH formats are not yet decoded natively.
+- Unknown EBO descriptor or serializer layouts may be rejected.
+- Specialized model families can have stricter topology/weight requirements than ordinary static environment Geometry.
+- Game memory limits are outside the scope of this Blender add-on. A structurally valid large EBO/FSH package can still exceed NBA Live's runtime memory limits.
+
+---
+
+# Troubleshooting
+
+## Model imports but textures are missing
+
+Check that the relevant `.fsh` and `_vram.fsh` archives are available and that the archive/texture directories in **NBA Live Environments** point to the correct location.
+
+## Exported model crashes the game
+
+First test an untouched import/export round-trip. If that works, reapply edits incrementally. Large textures and large model packages can also hit game-side memory limits even when the exported file itself is structurally valid.
+
+## Material does not use the expected effect
+
+Check the material name and RMS tag. For example:
+
+```text
+odrn [ScrollTextureDim]
+```
+
+is different from a normal stadium texture using `TextureStadium`.
+
+## FSH format is reported unsupported
+
+Keep the original FSH file. The native decoder deliberately stops on unknown formats instead of guessing and producing incorrect textures.
+
+---
+
+# v1.5 release notes
+
+v1.5 is the cleaned release of the combined NBA Live EBO/environment toolset.
+
+Highlights:
+
+- consolidated environment, stadium/court, backboard, net, and player/coach workflows
+- native FSH extraction and repacking
+- no GX/Gimex dependency
+- native FSH generation for new packages
+- cleaned package with obsolete experimental modules and bundled base models removed
+- player accessories intentionally removed from the release workflow
+- all main NBA Live sidebar panels collapsed by default
+- backboard `ScrollTextureDim` material support
+- current stable static-model, UV, vertex-color, transparency, material, topology, weight, and morph workflows retained
+
