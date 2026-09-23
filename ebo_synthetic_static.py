@@ -124,8 +124,9 @@ def _check_geo(g):
     if not g.materials:
         raise SyntheticEboError(f'{name}: no materials')
     mats=tuple(_check_batch(x) for x in g.materials)
-    if len({m.texture_name for m in mats})!=len(mats):
-        raise SyntheticEboError(f'{name}: duplicate material names')
+    identities={(m.texture_name,m.rms_name) for m in mats}
+    if len(identities)!=len(mats):
+        raise SyntheticEboError(f'{name}: duplicate texture/RMS material identities')
     return SyntheticGeometry(
         name,
         mats,

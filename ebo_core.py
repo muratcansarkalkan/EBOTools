@@ -27,6 +27,38 @@ class CourtFormatError(ValueError):
     """The file does not match the currently supported court EBO layout."""
 
 
+# Canonical Blender-facing names for the six native backboard clock channels.
+# The runtime itself remains gNbaShotClock_RMRuntime (06-08) or
+# gShotClock_RMRuntime (05); these labels are semantic aliases only.
+SHOTCLOCK_CHANNEL_NAMES = {
+    0: "GameMinTens",
+    1: "GameMinOnes",
+    2: "GameSecTens",
+    3: "GameSecOnes",
+    4: "ShotClockTens",
+    5: "ShotClockOnes",
+}
+SHOTCLOCK_CHANNEL_INDICES = {
+    name.casefold(): index for index, name in SHOTCLOCK_CHANNEL_NAMES.items()
+}
+
+
+def shotclock_rms_alias(uv_index: int) -> str | None:
+    """Return e.g. ``NBAShotClock_ShotClockTens`` for a native channel."""
+    channel = SHOTCLOCK_CHANNEL_NAMES.get(int(uv_index))
+    return f"NBAShotClock_{channel}" if channel else None
+
+
+def shotclock_uv_index_from_alias(value: str) -> int | None:
+    """Decode a Blender-facing NBAShotClock_* semantic alias."""
+    label = str(value or "").strip()
+    prefix = "NBAShotClock_"
+    if not label.casefold().startswith(prefix.casefold()):
+        return None
+    channel = label[len(prefix):].strip().casefold()
+    return SHOTCLOCK_CHANNEL_INDICES.get(channel)
+
+
 @dataclass(frozen=True)
 class Buffer:
     offset: int
@@ -62,6 +94,10 @@ class Batch:
     primitive_word: int | None = None
     palette_word: int | None = None
     selector_word: int | None = None
+    # Native backboard shot-clock materials carry one Float4 whose first
+    # component is a stable channel ordinal. Full-arena samples use
+    # 0,1,2,3,5,4 for time,time,time,time,tnum,tnum.
+    shotclock_uv_index: int | None = None
 
 
 @dataclass(frozen=True)
@@ -251,6 +287,7 @@ def parse_court(data: bytes) -> Court:
             palette_count = 0
             selector_offset = None
             selectors: tuple[int, ...] = ()
+            shotclock_uv_index = None
             pcdata_word = count_word = primitive_word = palette_word_meta = selector_word_meta = None
             # Static Geometry begins with direct position/UV/colour/index
             # pointers. Skinned models instead begin with compression data.
@@ -346,6 +383,20 @@ def parse_court(data: bytes) -> Court:
                 primitive_count = _read(data, "<I", index_offset)[0] // 2 - 2
                 relative = extended[17]
                 texture_names = (_cstring(data, string_table + relative),)
+
+                # Word 2 is the extra Float4 unique to the native backboard
+                # shot-clock descriptor. Its first float is the channel ordinal.
+                channel_block = extended[2]
+                if 0 <= channel_block <= len(data) - 16:
+                    channel_value = _read(data, "<f", channel_block)[0]
+                    if math.isfinite(channel_value):
+                        rounded = int(round(channel_value))
+                        if (
+                            abs(channel_value - rounded) <= 1.0e-5
+                            and rounded in SHOTCLOCK_CHANNEL_NAMES
+                        ):
+                            shotclock_uv_index = rounded
+
                 positions = _buffer(data, position_offset, 12, vertex_count)
                 normals = _buffer(data, normal_offset, 12, vertex_count)
                 uvs = _buffer(data, uv_offset, 8, vertex_count)
@@ -443,6 +494,7 @@ def parse_court(data: bytes) -> Court:
                     primitive_word=primitive_word,
                     palette_word=palette_word_meta,
                     selector_word=selector_word_meta,
+                    shotclock_uv_index=shotclock_uv_index,
                 )
             )
         meshes.append(Mesh(mesh_name, mesh_offset, tuple(batches)))
@@ -946,24 +998,55 @@ def add_material_batches(court: Court, additions: tuple[NewMaterialBatch, ...]) 
 
 
 def remove_material_batches(court: Court, removals: tuple[tuple[str, str], ...]) -> Court:
-    """Remove named groups while preserving shared strings and FSH ownership."""
+    """Remove uniquely-named groups while preserving shared strings and FSH ownership."""
     reduced = court
     for mesh_name, material in removals:
-        reduced = _remove_material_batch(reduced, mesh_name, material)
+        reduced = _remove_material_batch(reduced, mesh_name, material=material)
     return reduced
 
 
-def _remove_material_batch(court: Court, mesh_name: str, material: str) -> Court:
+def remove_material_batch_indices(court: Court, removals: tuple[tuple[str, int], ...]) -> Court:
+    """Remove concrete material rows by mesh/batch index.
+
+    This is the preferred API when several rows intentionally share one
+    texture name but use different runtime bindings. Indices are removed in
+    descending order per mesh so earlier indices remain stable.
+    """
+    reduced = court
+    grouped: dict[str, list[int]] = {}
+    for mesh_name, batch_index in removals:
+        grouped.setdefault(mesh_name, []).append(int(batch_index))
+    for mesh_name, indices in grouped.items():
+        for batch_index in sorted(set(indices), reverse=True):
+            reduced = _remove_material_batch(reduced, mesh_name, batch_index=batch_index)
+    return reduced
+
+
+def _remove_material_batch(
+    court: Court,
+    mesh_name: str,
+    *,
+    material: str | None = None,
+    batch_index: int | None = None,
+) -> Court:
     mesh = next((item for item in court.meshes if item.name == mesh_name), None)
     if mesh is None:
         raise CourtFormatError(f"Cannot remove a material from unknown EBO object {mesh_name!r}.")
-    matches = [batch for batch in mesh.batches if batch.material == material]
+    if batch_index is not None:
+        matches = [batch for batch in mesh.batches if batch.batch_index == batch_index]
+        label = f"batch {batch_index}"
+    else:
+        if material is None:
+            raise CourtFormatError("Material removal needs a name or batch index.")
+        matches = [batch for batch in mesh.batches if batch.material == material]
+        label = repr(material)
     if len(matches) != 1:
-        raise CourtFormatError(f"Object {mesh.name!r} has no unique material group {material!r}.")
+        raise CourtFormatError(f"Object {mesh.name!r} has no unique material group {label}.")
     if len(mesh.batches) <= 1:
         raise CourtFormatError(f"Object {mesh.name!r} must retain at least one EBO material group.")
 
     removed = matches[0]
+    material = removed.material
     count = len(mesh.batches)
     row = mesh.offset + 104 + removed.batch_index * 48
     descriptor = _read(court.data, "<I", row + 12)[0]
@@ -1128,8 +1211,8 @@ def _remove_material_batch(court: Court, mesh_name: str, material: str) -> Court
     validate_stream_headers(verified)
     mesh_serializer_preambles(verified)
     verified_mesh = next(item for item in verified.meshes if item.name == mesh.name)
-    if len(verified_mesh.batches) != count - 1 or any(batch.material == material for batch in verified_mesh.batches):
-        raise CourtFormatError(f"Removing material {material!r} failed EBO structure verification.")
+    if len(verified_mesh.batches) != count - 1:
+        raise CourtFormatError(f"Removing material row {material!r} failed EBO structure verification.")
     return verified
 
 
@@ -1159,8 +1242,8 @@ def rename_material_batches(court: Court, names: dict[tuple[str, int], str]) -> 
                 data.extend(name.encode("ascii") + b"\0")
             descriptor = _read(court.data, "<I", mesh.offset + 116 + batch.batch_index * 48)[0]
             _replace(data, descriptor + 32, "<I", offsets[name])
-        if len(resulting_names) != len(set(resulting_names)):
-            raise CourtFormatError(f"Object {mesh.name!r} would contain duplicate material groups.")
+        # Texture names are not material identities. Multiple material rows may
+        # intentionally share one texture while using different RMRuntime bindings.
     data.extend(b"\0" * (-len(data) % 4))
     _replace(data, 8, "<I", len(data))
     return parse_court(bytes(data))
@@ -1173,9 +1256,6 @@ def _add_material_batch(court: Court, addition: NewMaterialBatch) -> Court:
         raise CourtFormatError(f"Cannot add a material to unknown EBO object {addition.mesh_name!r}.")
     if not 0 <= addition.template_batch_index < len(mesh.batches):
         raise CourtFormatError(f"Object {mesh.name!r} has no template material group {addition.template_batch_index}.")
-    if any(batch.material == name for batch in mesh.batches):
-        raise CourtFormatError(f"Object {mesh.name!r} already contains material {name!r}.")
-
     template = mesh.batches[addition.template_batch_index]
     count = len(mesh.batches)
     batch_table = mesh.offset + 104

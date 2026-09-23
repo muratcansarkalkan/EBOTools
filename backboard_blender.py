@@ -20,7 +20,7 @@ from bpy_extras.io_utils import ExportHelper
 from pathlib import Path
 import struct
 import re
-from . import ebo_backboard, ebo_backboard_variants, synthetic_fsh
+from . import ebo_backboard, ebo_backboard_variants, ebo_core, synthetic_fsh
 
 GROUP_SUPPORT = "Backboard_Support"
 GROUP_BOARD = "Backboard_Board"
@@ -68,6 +68,101 @@ def _normalized_material_asset_name(name):
     # Blender copy suffixes are datablock names, not EBO AssetNames.
     m = re.match(r"^(.*?)(?:\.\d{3})?$", base)
     return (m.group(1) if m else base).strip().lower()
+
+
+def _material_rms_label(mat):
+    name = str(getattr(mat, "name", "") or "").strip()
+    encoded = name[4:] if name.lower().startswith("ebo.") else name
+    if encoded.endswith("]") and " [" in encoded:
+        return encoded.rsplit(" [", 1)[1][:-1].strip()
+    return ""
+
+
+def _shotclock_uv_index_for_material(mat):
+    """Resolve the native clock channel represented by one Blender material.
+
+    A visible ``[NBAShotClock_*]`` semantic name is authoritative. Imported
+    metadata is the fallback for older scenes whose material names are still
+    generic. This prevents stale shared-material metadata from overriding the
+    channel the user can actually see in Blender.
+    """
+    alias_index = ebo_core.shotclock_uv_index_from_alias(_material_rms_label(mat))
+    if alias_index is not None:
+        return alias_index
+    if "nba_live_shotclock_uv_index" in mat:
+        return int(mat["nba_live_shotclock_uv_index"])
+    return None
+
+
+def _resolved_shotclock_slot_indices(obj):
+    """Return ``material_slot_index -> native uvIndex`` for BaseBackboard.
+
+    Healthy native files always contain four ``time`` channels 0,1,2,3 and two
+    ``tnum`` channels 5,4. New semantic names preserve those values explicitly.
+
+    Older Blender scenes may still have several slots sharing one material
+    datablock, which can collapse custom properties to the final value (for
+    example all ``time`` slots becoming 3). When no complete set of semantic
+    aliases is present, recover the proven native mapping by slot occurrence.
+    """
+    groups = {"time": [], "tnum": []}
+    for slot_index, slot in enumerate(obj.material_slots):
+        mat = slot.material
+        if mat is None:
+            continue
+        asset = _normalized_material_asset_name(mat.name)
+        if asset in groups:
+            alias_index = ebo_core.shotclock_uv_index_from_alias(
+                _material_rms_label(mat)
+            )
+            groups[asset].append((slot_index, mat, alias_index))
+
+    expected = {
+        "time": (0, 1, 2, 3),
+        "tnum": (5, 4),
+    }
+    resolved = {}
+
+    for role, occurrences in groups.items():
+        if not occurrences:
+            continue
+
+        wanted = expected[role]
+        if len(occurrences) != len(wanted):
+            raise ValueError(
+                f"Expected {len(wanted)} {role} shot-clock material slots; "
+                f"found {len(occurrences)}."
+            )
+
+        # If the Blender-visible semantic aliases form a complete native set,
+        # honor them exactly, even if the user reordered the material slots.
+        aliases = [item[2] for item in occurrences]
+        if all(value is not None for value in aliases):
+            if set(aliases) != set(wanted) or len(set(aliases)) != len(wanted):
+                raise ValueError(
+                    f"{role} semantic shot-clock names are duplicated or incomplete: "
+                    f"{aliases}; expected {list(wanted)}."
+                )
+            for (slot_index, _mat, _alias), value in zip(occurrences, aliases):
+                resolved[slot_index] = int(value)
+            continue
+
+        # Legacy scene fallback. Custom properties on shared Blender materials
+        # are not reliable per-slot identity, so restore the native batch-order
+        # contract instead of serializing duplicate channel values.
+        for (slot_index, _mat, _alias), value in zip(occurrences, wanted):
+            resolved[slot_index] = int(value)
+
+    return resolved
+
+
+def _set_shotclock_display_name(mat, asset_name, uv_index):
+    alias = ebo_core.shotclock_rms_alias(uv_index)
+    if not alias:
+        return
+    prefix = "EBO." if str(mat.name).lower().startswith("ebo.") else ""
+    mat.name = f"{prefix}{asset_name} [{alias}]"
+    mat["nba_live_rms_display_type"] = alias
 
 
 def _shotclock_slot_occurrences(objs):
@@ -311,6 +406,7 @@ def _tag_material(mat, game, role, uv_index):
     mat["nba_live_shotclock_uv_index"] = int(uv_index)
     mat["nba_live_rms_runtime"] = SHOTCLOCK_RMS[game]
     mat["nba_live_backboard_bone"] = GROUP_BOARD
+    _set_shotclock_display_name(mat, role, uv_index)
 
 
 class NBA_OT_backboard_tag_shotclock(Operator):
@@ -375,14 +471,18 @@ class NBA_OT_backboard_validate_shotclock(Operator):
         for obj in _mesh_objects(context):
             for slot in obj.material_slots:
                 mat = slot.material
-                if mat is None or "nba_live_shotclock_uv_index" not in mat:
+                if mat is None:
                     continue
+                uv_index = _shotclock_uv_index_for_material(mat)
+                if uv_index is None:
+                    continue
+                role = str(mat.get("nba_live_backboard_role", "")) or _normalized_material_asset_name(mat.name)
                 found.append((
                     mat.name,
-                    mat.get("nba_live_backboard_role", ""),
-                    int(mat.get("nba_live_shotclock_uv_index", -999)),
-                    mat.get("nba_live_rms_runtime", ""),
-                    mat.get("nba_live_backboard_bone", ""),
+                    role,
+                    int(uv_index),
+                    mat.get("nba_live_rms_runtime", SHOTCLOCK_RMS[game]),
+                    mat.get("nba_live_backboard_bone", GROUP_BOARD),
                 ))
 
         expected = {
@@ -568,7 +668,12 @@ def _material_runtime(mat, game):
     stale metadata from another game cannot silently override the chosen target.
     """
     role = str(mat.get("nba_live_backboard_role", ""))
-    if role in {"time", "tnum"} or "nba_live_shotclock_uv_index" in mat:
+    asset = _normalized_material_asset_name(mat.name)
+    if (
+        role in {"time", "tnum"}
+        or asset in {"time", "tnum"}
+        or _shotclock_uv_index_for_material(mat) is not None
+    ):
         return SHOTCLOCK_RMS[game]
 
     name = str(mat.name or "").strip()
@@ -603,6 +708,11 @@ def _compile_backboard_object(obj, game):
     uv_layer = mesh.uv_layers[0] if mesh.uv_layers else None
     matrix = obj.matrix_world
     normal_matrix = matrix.to_3x3()
+    shotclock_slots = (
+        _resolved_shotclock_slot_indices(obj)
+        if _looks_like_existing_backboard(obj)
+        else {}
+    )
 
     batches = []
     for slot_index, slot in enumerate(obj.material_slots):
@@ -615,8 +725,11 @@ def _compile_backboard_object(obj, game):
 
         texture = _material_texture_name(mat)
         runtime = _material_runtime(mat, game)
-        shot = "nba_live_shotclock_uv_index" in mat
-        uv_index = int(mat["nba_live_shotclock_uv_index"]) if shot else None
+        uv_index = shotclock_slots.get(
+            slot_index,
+            _shotclock_uv_index_for_material(mat),
+        )
+        shot = uv_index is not None
 
         lookup = {}
         positions = []
@@ -698,6 +811,28 @@ def _compile_backboard_object(obj, game):
     return tuple(batches)
 
 
+def _validate_compiled_shotclock(output):
+    """Verify the six native channel ordinals in the generated EBO itself."""
+    parsed = ebo_core.parse_court(output)
+    channels = {"time": [], "tnum": []}
+    for batch in parsed.batches:
+        if batch.profile != "BACKBOARD_SHOTCLOCK":
+            continue
+        if batch.material in channels:
+            channels[batch.material].append(batch.shotclock_uv_index)
+
+    if sorted(channels["time"]) != [0, 1, 2, 3]:
+        raise ValueError(
+            "Compiled EBO has invalid time channel ordinals: "
+            f"{channels['time']}; expected 0,1,2,3."
+        )
+    if sorted(channels["tnum"]) != [4, 5]:
+        raise ValueError(
+            "Compiled EBO has invalid tnum channel ordinals: "
+            f"{channels['tnum']}; expected 5,4."
+        )
+
+
 def _reference_geometry_flags(path):
     data = Path(path).read_bytes()
     if len(data) < 0x60 or data[:4] != b"EBO\0":
@@ -754,14 +889,14 @@ def _validate_export_scene(context):
             _semantic_bone_id(obj, v.index)
 
     # BaseBackboard must contain the full six-batch dynamic clock contract.
+    slot_indices = _resolved_shotclock_slot_indices(base[0])
     found = []
-    for slot in base[0].material_slots:
+    for slot_index, slot in enumerate(base[0].material_slots):
         mat = slot.material
-        if mat is None or "nba_live_shotclock_uv_index" not in mat:
+        if mat is None or slot_index not in slot_indices:
             continue
-        role = str(mat.get("nba_live_backboard_role", ""))
-        idx = int(mat["nba_live_shotclock_uv_index"])
-        found.append((role, idx))
+        role = _normalized_material_asset_name(mat.name)
+        found.append((role, int(slot_indices[slot_index])))
 
     expected = [
         ("time", 0), ("time", 1), ("time", 2), ("time", 3),
@@ -770,7 +905,7 @@ def _validate_export_scene(context):
     if sorted(found) != sorted(expected) or len(found) != 6:
         raise ValueError(
             "BaseBackboard shot-clock contract is incomplete. "
-            "Run Tag Shot Clock Materials and Validate Shot Clock first."
+            "Expected time[0,1,2,3] and tnum[5,4]."
         )
     return base[0], led[0]
 
@@ -833,6 +968,8 @@ class NBA_OT_export_backboard_ebo(Operator, ExportHelper):
                 raise ValueError(
                     f"Internal backboard compiler size mismatch: {declared} != {len(output)}."
                 )
+
+            _validate_compiled_shotclock(output)
 
             destination = Path(self.filepath).resolve()
             destination.parent.mkdir(parents=True, exist_ok=True)

@@ -29,88 +29,6 @@ ARCHIVE_ITEMS = (
 _TEMPLATE_ITEMS_CACHE: dict[tuple[str, ...], list[tuple[str, str, str]]] = {}
 
 
-JUMBOTRON_RMS_NAMES = (
-    # Score
-    "JumboHomeHundreds",
-    "JumboHomeTens",
-    "JumboHomeOnes",
-    "JumboAwayHundreds",
-    "JumboAwayTens",
-    "JumboAwayOnes",
-
-    # Game clock / shot clock / period
-    "JumboGameMinTens",
-    "JumboGameMinOnes",
-    "JumboGameSecTens",
-    "JumboGameSecOnes",
-    "JumboShotTens",
-    "JumboShotOnes",
-    "JumboPeriod",
-
-    # Team-level
-    "JumboHomeTimeouts",
-    "JumboAwayTimeouts",
-    "JumboHomeTeamFoulsOnes",
-    "JumboHomeTeamFoulsTens",
-    "JumboAwayTeamFoulsOnes",
-    "JumboAwayTeamFoulsTens",
-
-    # Home active five
-    "JumboHomeCourt1NumberOnes",
-    "JumboHomeCourt1NumberTens",
-    "JumboHomeCourt1PointsOnes",
-    "JumboHomeCourt1PointsTens",
-    "JumboHomeCourt1Fouls",
-    "JumboHomeCourt2NumberOnes",
-    "JumboHomeCourt2NumberTens",
-    "JumboHomeCourt2PointsOnes",
-    "JumboHomeCourt2PointsTens",
-    "JumboHomeCourt2Fouls",
-    "JumboHomeCourt3NumberOnes",
-    "JumboHomeCourt3NumberTens",
-    "JumboHomeCourt3PointsOnes",
-    "JumboHomeCourt3PointsTens",
-    "JumboHomeCourt3Fouls",
-    "JumboHomeCourt4NumberOnes",
-    "JumboHomeCourt4NumberTens",
-    "JumboHomeCourt4PointsOnes",
-    "JumboHomeCourt4PointsTens",
-    "JumboHomeCourt4Fouls",
-    "JumboHomeCourt5NumberOnes",
-    "JumboHomeCourt5NumberTens",
-    "JumboHomeCourt5PointsOnes",
-    "JumboHomeCourt5PointsTens",
-    "JumboHomeCourt5Fouls",
-
-    # Away active five
-    "JumboAwayCourt1NumberOnes",
-    "JumboAwayCourt1NumberTens",
-    "JumboAwayCourt1PointsOnes",
-    "JumboAwayCourt1PointsTens",
-    "JumboAwayCourt1Fouls",
-    "JumboAwayCourt2NumberOnes",
-    "JumboAwayCourt2NumberTens",
-    "JumboAwayCourt2PointsOnes",
-    "JumboAwayCourt2PointsTens",
-    "JumboAwayCourt2Fouls",
-    "JumboAwayCourt3NumberOnes",
-    "JumboAwayCourt3NumberTens",
-    "JumboAwayCourt3PointsOnes",
-    "JumboAwayCourt3PointsTens",
-    "JumboAwayCourt3Fouls",
-    "JumboAwayCourt4NumberOnes",
-    "JumboAwayCourt4NumberTens",
-    "JumboAwayCourt4PointsOnes",
-    "JumboAwayCourt4PointsTens",
-    "JumboAwayCourt4Fouls",
-    "JumboAwayCourt5NumberOnes",
-    "JumboAwayCourt5NumberTens",
-    "JumboAwayCourt5PointsOnes",
-    "JumboAwayCourt5PointsTens",
-    "JumboAwayCourt5Fouls",
-)
-
-
 def _diagnostic(message: str) -> None:
     line = f"[NBA Live] {message}"
     print(line, flush=True)
@@ -235,21 +153,18 @@ def _material(
     *,
     transparent: bool,
     rms_type: str | None = None,
-    display_rms_type: str | None = None,
     has_vertex_colors: bool = True,
     extend_uvs: bool = False,
     textureless: bool = False,
     placeholder: bool = False,
 ):
-    visible_rms = display_rms_type or rms_type
-    display_name = f"EBO.{texture_name}" + (f" [{visible_rms}]" if visible_rms else "")
+    display_name = f"EBO.{texture_name}" + (f" [{rms_type}]" if rms_type else "")
     # Never reuse a material datablock from a previous import. Rebuilding its
     # nodes would silently change the texture on the already imported asset.
     material = bpy.data.materials.new(display_name)
     material["nba_live_material_name"] = texture_name
     material["nba_live_original_material_name"] = texture_name
     material["nba_live_rms_type"] = rms_type or ""
-    material["nba_live_rms_display_type"] = display_rms_type or rms_type or ""
     material["nba_live_fsh_archives"] = json.dumps(owners)
     material["nba_live_textureless"] = textureless
     material["nba_live_placeholder_texture"] = placeholder
@@ -323,7 +238,7 @@ def _build_object(
     collection,
     court: ebo_core.Court,
     mesh_record: ebo_core.Mesh,
-    materials: dict[tuple[str, int], object],
+    materials: dict[tuple[str, str], object],
 ):
     _diagnostic(f"Object {mesh_record.name}: decoding {len(mesh_record.batches)} material groups")
     vertices: list[tuple[float, float, float]] = []
@@ -375,14 +290,9 @@ def _build_object(
     obj["nba_live_mesh_name"] = mesh_record.name
     obj["nba_live_batch_counts"] = json.dumps([batch.vertex_count for batch in mesh_record.batches])
     obj["nba_live_batch_materials"] = json.dumps([batch.material for batch in mesh_record.batches])
-    rms_types = _rms_material_types(court)
-    obj["nba_live_batch_rms"] = json.dumps([
-        rms_types.get((mesh_record.name, batch.batch_index), "")
-        for batch in mesh_record.batches
-    ])
 
     for batch in mesh_record.batches:
-        geometry.materials.append(materials[mesh_record.name, batch.batch_index])
+        geometry.materials.append(materials[mesh_record.name, batch.material])
     for polygon, material_index in zip(geometry.polygons, face_batches):
         polygon.material_index = material_index
 
@@ -419,20 +329,6 @@ def _build_object(
     geometry.update()
     _diagnostic(f"Object {mesh_record.name}: finished")
     return obj
-
-
-def _display_rms_type(batch: ebo_core.Batch, native_rms_type: str) -> str:
-    """Return the Blender-facing semantic RMS label for one concrete row.
-
-    Native NBAShotClock/ShotClock materials all bind the same runtime. Their
-    serialized Float4 channel ordinal distinguishes the six logical digits, so
-    expose that distinction in Blender without inventing new game runtimes.
-    """
-    if batch.profile == "BACKBOARD_SHOTCLOCK" and batch.shotclock_uv_index is not None:
-        alias = ebo_core.shotclock_rms_alias(batch.shotclock_uv_index)
-        if alias:
-            return alias
-    return native_rms_type
 
 
 def import_environment(context, filepath: str, settings) -> tuple[object, int, int]:
@@ -476,10 +372,12 @@ def import_environment(context, filepath: str, settings) -> tuple[object, int, i
     extra_directory = _as_path(settings.additional_texture_directory)
     transparent_asset = source.stem.lower().endswith("_trans")
     rms_types = _rms_material_types(court)
-    materials: dict[tuple[str, int], object] = {}
-    shared_materials: dict[tuple[str, str, str, tuple[str, ...], bool, bool, bool, bool], object] = {}
+    materials: dict[tuple[str, str], object] = {}
+    shared_materials: dict[tuple[str, str, tuple[str, ...], bool, bool, bool, bool], object] = {}
     for batch in court.batches:
-        key = batch.mesh_name, batch.batch_index
+        key = batch.mesh_name, batch.material
+        if key in materials:
+            continue
         _diagnostic(f"Creating material: {batch.material}")
         textureless = not batch.texture_names
         owners = () if textureless else ownership.get(batch.material, ())
@@ -511,19 +409,9 @@ def import_environment(context, filepath: str, settings) -> tuple[object, int, i
                 except (fsh_archive.FshError, OSError) as exc:
                     _diagnostic(f"Could not create placeholder for {batch.material}: {exc}")
         rms_type = rms_types.get(key, "")
-        display_rms_type = _display_rms_type(batch, rms_type)
         has_vertex_colors = batch.colors is not None
         extend_uvs = batch.profile == "PLAYER_NORMAL"
-        shared_key = (
-            batch.material,
-            rms_type,
-            display_rms_type,
-            tuple(owners),
-            has_vertex_colors,
-            extend_uvs,
-            textureless,
-            placeholder,
-        )
+        shared_key = batch.material, rms_type, tuple(owners), has_vertex_colors, extend_uvs, textureless, placeholder
         material = shared_materials.get(shared_key)
         if material is None:
             material = _material(
@@ -533,18 +421,11 @@ def import_environment(context, filepath: str, settings) -> tuple[object, int, i
                 texture,
                 transparent=transparent_asset,
                 rms_type=rms_type or None,
-                display_rms_type=display_rms_type or None,
                 has_vertex_colors=has_vertex_colors,
                 extend_uvs=extend_uvs,
                 textureless=textureless,
                 placeholder=placeholder,
             )
-            if batch.shotclock_uv_index is not None:
-                material["nba_live_shotclock_uv_index"] = int(batch.shotclock_uv_index)
-                material["nba_live_backboard_role"] = batch.material.casefold()
-                material["nba_live_texture_name"] = batch.material
-                if rms_type:
-                    material["nba_live_rms_runtime"] = f"g{rms_type}_RMRuntime"
             shared_materials[shared_key] = material
         materials[key] = material
 
@@ -575,37 +456,29 @@ def _active_collection(context):
 
 
 def _ebo_material_spec(material) -> tuple[str, str | None, str]:
-    """Return texture, optional template, and archive for an EBO material.
+    """Return texture, optional template, and archive from an EBO material name.
 
-    The ``EBO.`` prefix is optional for bracketed RMS material names. These are
-    therefore equivalent::
-
-        EBO.jumbo [JumboHomeOnes]
-        jumbo [JumboHomeOnes]
-
-    Texture identity and render-method identity are intentionally separate. It
-    is valid for several Blender/EBO material groups to use the same texture
-    while binding different RMS runtimes.
+    Existing group: EBO.<texture> [<RMS type>]
+    New group:      EBO.<texture> [<RMS type>]
+                    EBO.<texture>.<template>.<main|vram>
     """
-    display_name = str(getattr(material, "name", "") or "").strip()
-    encoded = display_name[4:] if display_name.startswith("EBO.") else display_name
-
-    if encoded.endswith("]") and " [" in encoded:
-        texture, rms_label = encoded.rsplit(" [", 1)
-        rms_type = rms_label[:-1].strip()
-        texture = ebo_core.validate_material_name(texture.strip())
-        ebo_core.validate_material_name(rms_type)
-        properties = getattr(material, "nba_live_environment", None)
-        archive = getattr(properties, "archive", "MAIN") if properties else "MAIN"
-
-        # Imported groups already own a concrete EBO row/runtime binding, so
-        # their bracket is descriptive. A newly-created Blender material uses
-        # the bracketed RMS as its requested template/runtime type.
-        original_name = material.get("nba_live_original_material_name", "")
-        template = None if original_name else rms_type
-        return texture, template, archive
-
+    display_name = getattr(material, "name", "")
     if display_name.startswith("EBO."):
+        encoded = display_name[4:]
+        if encoded.endswith("]") and " [" in encoded:
+            texture, rms_label = encoded.rsplit(" [", 1)
+            rms_type = rms_label[:-1]
+            texture = ebo_core.validate_material_name(texture)
+            ebo_core.validate_material_name(rms_type)
+            properties = getattr(material, "nba_live_environment", None)
+            archive = getattr(properties, "archive", "MAIN") if properties else "MAIN"
+            # Imported groups already contain their EBO descriptor and use the
+            # bracket only as a readable RMS label. For an ordinary material
+            # created in Blender, the same label selects the RMS template to
+            # clone, e.g. EBO.new0 [TextureStadium].
+            original_name = material.get("nba_live_original_material_name", "")
+            template = None if original_name else rms_type
+            return texture, template, archive
         parts = encoded.rsplit(".", 2)
         if len(parts) == 3 and parts[2].lower() in {"main", "vram"}:
             texture, template, archive = parts
@@ -617,7 +490,8 @@ def _ebo_material_spec(material) -> tuple[str, str | None, str]:
         archive = getattr(properties, "archive", "MAIN") if properties else "MAIN"
         return texture, None, archive
 
-    # Compatibility with scenes imported by older versions.
+    # Compatibility with scenes imported by versions through 0.3.0. New
+    # Blender materials must use the EBO.* naming convention.
     properties = getattr(material, "nba_live_environment", None)
     legacy_name = (
         properties.texture_name
@@ -632,45 +506,18 @@ def _ebo_material_spec(material) -> tuple[str, str | None, str]:
         return ebo_core.validate_material_name(legacy_name), template, archive
     raise ebo_core.CourtFormatError(
         f"Material {display_name or '<unnamed>'!r} is not an EBO material. "
-        "Use <texture> [<RMS type>], EBO.<texture> [<RMS type>], or "
-        "EBO.<texture>.<template>.<main|vram>."
+        "Rename it EBO.<texture> or EBO.<texture>.<template>.<main|vram>."
     )
 
 
-def _material_rms_type(material) -> str:
-    """Return the real serialized RMS type for material identity.
-
-    Imported NBAShotClock rows may display semantic labels such as
-    ``[NBAShotClock_ShotClockTens]``. Those are not runtime names, so imported
-    ``nba_live_rms_type`` metadata remains authoritative. New materials still
-    use their visible bracket as the requested RMS/template.
-    """
-    imported_rms = str(material.get("nba_live_rms_type", "") or "").strip()
-    original_name = str(material.get("nba_live_original_material_name", "") or "").strip()
-    if original_name and imported_rms:
-        return imported_rms
-
-    display_name = str(getattr(material, "name", "") or "").strip()
-    encoded = display_name[4:] if display_name.startswith("EBO.") else display_name
-    if encoded.endswith("]") and " [" in encoded:
-        return encoded.rsplit(" [", 1)[1][:-1].strip()
-    return imported_rms
-
-
-def _material_identity(material) -> tuple[str, str]:
-    """Logical material identity: shared texture + RMS runtime type."""
-    texture, _, _ = _ebo_material_spec(material)
-    return texture, _material_rms_type(material)
-
-
-def _rms_material_types(court: ebo_core.Court) -> dict[tuple[str, int], str]:
-    """Map each concrete material row to its bound RMS render-method type."""
+def _rms_material_types(court: ebo_core.Court) -> dict[tuple[str, str], str]:
+    """Map each material group to its bound RMS render-method type."""
     rows = {
-        mesh.offset + 104 + batch.batch_index * 48: (mesh.name, batch.batch_index)
+        mesh.offset + 104 + batch.batch_index * 48: (mesh.name, batch.material)
         for mesh in court.meshes
         for batch in mesh.batches
     }
-    result: dict[tuple[str, int], str] = {}
+    result: dict[tuple[str, str], str] = {}
     for group in ebo_core.external_variable_groups(court):
         if not group.name.startswith("g") or not group.name.endswith("_RMRuntime"):
             continue
@@ -685,7 +532,7 @@ def _rms_material_types(court: ebo_core.Court) -> dict[tuple[str, int], str]:
 def _resolve_material_template(
     mesh_record: ebo_core.Mesh,
     template_name: str,
-    rms_types: dict[tuple[str, int], str],
+    rms_types: dict[tuple[str, str], str],
 ) -> ebo_core.Batch | None:
     """Resolve either an existing texture name or an RMS type on this object."""
     direct = next((batch for batch in mesh_record.batches if batch.material == template_name), None)
@@ -696,7 +543,7 @@ def _resolve_material_template(
         (
             batch
             for batch in mesh_record.batches
-            if rms_types.get((mesh_record.name, batch.batch_index), "").casefold() == wanted
+            if rms_types.get((mesh_record.name, batch.material), "").casefold() == wanted
         ),
         None,
     )
@@ -947,7 +794,6 @@ def export_environment(context, filepath: str, settings) -> tuple[int, list[Path
     source = Path(collection[COLLECTION_SOURCE])
     if not source.is_file():
         raise ebo_core.CourtFormatError(f"Original template EBO was not found: {source}")
-
     court = ebo_core.parse_court(source.read_bytes())
     rms_types = _rms_material_types(court)
     objects = {
@@ -955,159 +801,79 @@ def export_environment(context, filepath: str, settings) -> tuple[int, list[Path
         for obj in collection.objects
         if obj.type == "MESH"
     }
-
-    # ------------------------------------------------------------------
-    # Original-group removal
-    # ------------------------------------------------------------------
-    # Material identity is (texture, RMS). This keeps shared-texture groups
-    # distinct, e.g. jumbo/JumboHomeTens vs jumbo/JumboAwayTens.
-    removals: list[tuple[str, int]] = []
+    removals: list[tuple[str, str]] = []
     for mesh_record in court.meshes:
         obj = objects.get(mesh_record.name)
         if obj is None:
             raise ebo_core.CourtFormatError(f"Original EBO object {mesh_record.name!r} is missing.")
-
-        original_by_identity = {
-            (batch.material, rms_types.get((mesh_record.name, batch.batch_index), "")): batch
-            for batch in mesh_record.batches
-        }
-        explicitly_removed_indices = {
-            int(value) for value in json.loads(obj.get("nba_live_removed_batch_indices", "[]"))
-        }
-        unknown_indices = {
-            index for index in explicitly_removed_indices
-            if not 0 <= index < len(mesh_record.batches)
-        }
-        if unknown_indices:
+        original_names = {batch.material for batch in mesh_record.batches}
+        explicitly_removed = set(json.loads(obj.get("nba_live_removed_materials", "[]")))
+        unknown_removals = explicitly_removed - original_names
+        if unknown_removals:
+            name = sorted(unknown_removals)[0]
             raise ebo_core.CourtFormatError(
-                f"Removed material index {min(unknown_indices)} does not belong to object {mesh_record.name!r}."
+                f"Removed material {name!r} does not belong to object {mesh_record.name!r}."
             )
-
-        assigned_originals: set[tuple[str, str]] = set()
-        seen_materials: set[int] = set()
+        assigned_originals: set[str] = set()
         for polygon in obj.data.polygons:
             if polygon.material_index >= len(obj.material_slots):
                 continue
             material = obj.material_slots[polygon.material_index].material
             if material is None:
                 continue
-            pointer = int(material.as_pointer())
-            if pointer in seen_materials:
-                continue
-            seen_materials.add(pointer)
-
             texture_name, template_name, _ = _ebo_material_spec(material)
-            if template_name is not None:
-                continue
-            original_name = str(material.get("nba_live_original_material_name", "") or "")
-            original_rms = str(material.get("nba_live_rms_type", "") or "")
-            candidates = []
-            if original_name:
-                candidates.append((original_name, original_rms))
-            candidates.append((texture_name, _material_rms_type(material)))
-            for identity in candidates:
-                if identity in original_by_identity:
-                    assigned_originals.add(identity)
-                    break
-
-        inferred_indices = {
-            batch.batch_index
-            for identity, batch in original_by_identity.items()
-            if identity not in assigned_originals
-        }
-        requested_indices = inferred_indices | explicitly_removed_indices
-        if len(requested_indices) >= len(mesh_record.batches):
+            original_name = "" if template_name is not None else material.get("nba_live_original_material_name", "")
+            if not original_name and template_name is None:
+                original_name = texture_name if template_name is None and texture_name in original_names else ""
+            if original_name in original_names:
+                assigned_originals.add(original_name)
+        # The Remove Material operator records the name explicitly. Also infer
+        # removal from an original group that no longer owns any faces. This
+        # makes removal survive Blender slot changes and older saved projects.
+        inferred_removed = original_names - assigned_originals
+        requested_removals = explicitly_removed | inferred_removed
+        if len(requested_removals) >= len(original_names):
             raise ebo_core.CourtFormatError(
                 f"Object {mesh_record.name!r} must retain at least one original material group with faces."
             )
-        removals.extend((mesh_record.name, index) for index in sorted(requested_indices))
-
-    court = ebo_core.remove_material_batch_indices(court, tuple(removals))
-    rms_types = _rms_material_types(court)
-
-    # ------------------------------------------------------------------
-    # Rename/add groups using (texture, RMS) identity
-    # ------------------------------------------------------------------
+        for name in sorted(requested_removals):
+            removals.append((mesh_record.name, name))
+    court = ebo_core.remove_material_batches(court, tuple(removals))
     renames: dict[tuple[str, int], str] = {}
     additions: list[ebo_core.NewMaterialBatch] = []
     used_materials: dict[str, tuple[object, str]] = {}
-    renamed_source_textures: set[str] = set()
-
     for mesh_record in court.meshes:
         obj = objects.get(mesh_record.name)
         if obj is None:
             raise ebo_core.CourtFormatError(f"Original EBO object {mesh_record.name!r} is missing.")
-
-        originals = {
-            (batch.material, rms_types.get((mesh_record.name, batch.batch_index), "")): batch
-            for batch in mesh_record.batches
-        }
-        assigned: dict[tuple[str, str], object] = {}
-        seen_materials: set[int] = set()
-
+        originals = {batch.material: batch for batch in mesh_record.batches}
+        assigned: dict[str, object] = {}
         for polygon in obj.data.polygons:
-            if polygon.material_index >= len(obj.material_slots):
-                continue
             material = obj.material_slots[polygon.material_index].material
-            if material is None:
-                continue
-            pointer = int(material.as_pointer())
-            if pointer in seen_materials:
-                continue
-            seen_materials.add(pointer)
-
             name, encoded_template, archive_kind = _ebo_material_spec(material)
-            rms_type = _material_rms_type(material)
-            identity = (name, rms_type)
-            assigned[identity] = material
-
+            previous = used_materials.get(name)
+            if previous is not None and previous[0] != material:
+                if previous[1] != archive_kind:
+                    raise fsh_archive.FshError(
+                        f"Texture {name!r} is assigned to both the main and VRAM archives. "
+                        "Use one archive choice for each texture name."
+                    )
             if not material.get("nba_live_textureless"):
-                previous = used_materials.get(name)
-                if previous is not None and previous[0] != material:
-                    if previous[1] != archive_kind:
-                        raise fsh_archive.FshError(
-                            f"Shared texture {name!r} is assigned to both the main and VRAM archives. "
-                            "Use one archive choice for every material that references it."
-                        )
-                    previous_image = _material_image_path(previous[0])
-                    current_image = _material_image_path(material)
-                    if previous_image is not None and current_image is not None and previous_image != current_image:
-                        raise fsh_archive.FshError(
-                            f"Shared texture {name!r} is assigned different PNG images. "
-                            "All materials using the same texture name must use the same image."
-                        )
-                    # Prefer the representative that actually has an image.
-                    if previous_image is None and current_image is not None:
-                        used_materials[name] = material, archive_kind
-                else:
-                    used_materials[name] = material, archive_kind
-
-            if encoded_template is not None:
-                continue
-
-            original_name = str(material.get("nba_live_original_material_name", "") or "")
-            original_rms = str(material.get("nba_live_rms_type", "") or "")
-            original_identity = (original_name, original_rms) if original_name else None
-            original_batch = originals.get(original_identity) if original_identity else None
-            if original_batch is None:
-                original_batch = originals.get(identity)
-            if original_batch is not None and original_batch.material != name:
-                renames[mesh_record.name, original_batch.batch_index] = name
-                renamed_source_textures.add(original_batch.material)
+                used_materials[name] = material, archive_kind
+            assigned[name] = material
+            original_name = "" if encoded_template is not None else material.get("nba_live_original_material_name", "")
+            if not original_name and encoded_template is None and name in originals:
+                original_name = name
+            if original_name in originals and original_name != name:
+                renames[mesh_record.name, originals[original_name].batch_index] = name
 
         resulting_originals = {
-            (
-                renames.get((mesh_record.name, batch.batch_index), batch.material),
-                rms_types.get((mesh_record.name, batch.batch_index), ""),
-            )
+            renames.get((mesh_record.name, batch.batch_index), batch.material)
             for batch in mesh_record.batches
         }
-
-        for identity, material in assigned.items():
-            name, desired_rms = identity
-            if identity in resulting_originals:
+        for name, material in assigned.items():
+            if name in resulting_originals:
                 continue
-
             _, template_name, _ = _ebo_material_spec(material)
             if template_name == "__legacy_template__":
                 template_choices = json.loads(material.get("nba_live_template_batches", "{}"))
@@ -1121,16 +887,16 @@ def export_environment(context, filepath: str, settings) -> tuple[int, list[Path
                 template_name = imported_names[template_index] if 0 <= template_index < len(imported_names) else None
             if template_name is None:
                 raise ebo_core.CourtFormatError(
-                    f"New material {name!r} [{desired_rms}] needs a compatible template. "
-                    f"Use <texture> [<existing RMS type>] or EBO.{name}.<template>.<main|vram>."
+                    f"New material {name!r} needs a template and archive in its Blender name: "
+                    f"EBO.{name}.<template>.<main|vram>."
                 )
             template_batch = _resolve_material_template(mesh_record, template_name, rms_types)
             if template_batch is None:
                 available_types = sorted(
                     {
-                        rms_types[mesh_record.name, batch.batch_index]
+                        rms_types[mesh_record.name, batch.material]
                         for batch in mesh_record.batches
-                        if (mesh_record.name, batch.batch_index) in rms_types
+                        if (mesh_record.name, batch.material) in rms_types
                     }
                 )
                 choices = ", ".join(available_types) or "no named RMS types"
@@ -1142,7 +908,6 @@ def export_environment(context, filepath: str, settings) -> tuple[int, list[Path
 
     court = ebo_core.rename_material_batches(court, renames)
     court = ebo_core.add_material_batches(court, tuple(additions))
-
     edited: dict[tuple[str, int], ebo_core.RebuiltBatch] = {}
     for mesh_record in court.meshes:
         obj = objects.get(mesh_record.name)
@@ -1155,9 +920,6 @@ def export_environment(context, filepath: str, settings) -> tuple[int, list[Path
     destination = Path(filepath).resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
 
-    # ------------------------------------------------------------------
-    # FSH rebuild: one texture entry may serve many RMS/material groups.
-    # ------------------------------------------------------------------
     rebuilt_archives: list[Path] = []
     if settings.repack_fsh:
         root = Path(collection["nba_live_texture_root"])
@@ -1167,8 +929,6 @@ def export_environment(context, filepath: str, settings) -> tuple[int, list[Path
         )
         by_kind = {fsh_archive.archive_kind(archive.path): archive for archive in archives}
         required: dict[str, set[str]] = {archive.path.name: set() for archive in archives}
-        excluded: dict[str, set[str]] = {archive.path.name: set() for archive in archives}
-
         for name, (material, kind) in used_materials.items():
             archive = by_kind.get(kind)
             if archive is None:
@@ -1187,22 +947,6 @@ def export_environment(context, filepath: str, settings) -> tuple[int, list[Path
                     f"Texture {name!r} requires a PNG image for {archive.path.name}. "
                     "Set its image in the NBA Live material panel."
                 )
-
-        # Explicitly renamed source textures are obsolete only when no final
-        # material still references that name. This removes transitional names
-        # such as jh10/ja10 while preserving unrelated original FSH entries.
-        final_texture_names_by_kind = {"MAIN": set(), "VRAM": set()}
-        for final_name, (_, final_kind) in used_materials.items():
-            final_texture_names_by_kind.setdefault(final_kind, set()).add(final_name)
-        for old_name in renamed_source_textures:
-            for archive in archives:
-                kind = fsh_archive.archive_kind(archive.path)
-                if old_name in final_texture_names_by_kind.get(kind, set()):
-                    continue
-                canonical = fsh_archive.resolve_entry_name(archive, old_name)
-                if canonical in archive.texture_names:
-                    excluded[archive.path.name].add(canonical)
-
         for archive in archives:
             rebuilt_archives.append(
                 fsh_archive.repack_archive(
@@ -1210,10 +954,8 @@ def export_environment(context, filepath: str, settings) -> tuple[int, list[Path
                     root / archive.path.stem,
                     destination.parent,
                     required_names=frozenset(required[archive.path.name]),
-                    excluded_names=frozenset(excluded[archive.path.name]),
                 )
             )
-
     destination.write_bytes(updated)
     return changed_batches, rebuilt_archives
 
@@ -1282,89 +1024,6 @@ class NBAEnvironmentSettings(bpy.types.PropertyGroup):
         description="Existing material group whose compatible EBO render metadata will be cloned",
         items=_template_items,
     )
-    jumbotron_source_material: PointerProperty(
-        name="Source Material",
-        description="Material to duplicate for the full 69-channel jumbotron set",
-        type=bpy.types.Material,
-    )
-
-
-class NBA_OT_create_jumbotron_materials(bpy.types.Operator):
-    bl_idname = "nba_live.create_jumbotron_materials"
-    bl_label = "Create Full Jumbotron Set"
-    bl_description = (
-        "Duplicate one source material into all 69 jumbotron RMS materials "
-        "and append them to the active mesh"
-    )
-    bl_options = {"REGISTER", "UNDO"}
-
-    @classmethod
-    def poll(cls, context):
-        obj = context.active_object
-        return obj is not None and obj.type == "MESH"
-
-    def execute(self, context):
-        obj = context.active_object
-        settings = context.scene.nba_environment_settings
-        source = settings.jumbotron_source_material or obj.active_material
-
-        if source is None:
-            self.report({"ERROR"}, "Choose a source material or make one material active")
-            return {"CANCELLED"}
-
-        if len(JUMBOTRON_RMS_NAMES) != 69:
-            self.report({"ERROR"}, f"Internal jumbotron list has {len(JUMBOTRON_RMS_NAMES)} entries; expected 69")
-            return {"CANCELLED"}
-
-        source_name = str(source.name or "").strip()
-        if not source_name:
-            self.report({"ERROR"}, "Source material has no name")
-            return {"CANCELLED"}
-
-        # Allow either a plain texture material (jumbo) or an already-bracketed
-        # jumbotron material to be used as the visual/template source.
-        base_name = source_name[4:] if source_name.startswith("EBO.") else source_name
-        if base_name.endswith("]") and " [" in base_name:
-            base_name = base_name.rsplit(" [", 1)[0].strip()
-        base_name = ebo_core.validate_material_name(base_name)
-
-        prefix = "EBO." if source_name.startswith("EBO.") else ""
-        existing_slots = {
-            slot.material.name
-            for slot in obj.material_slots
-            if slot.material is not None
-        }
-
-        created = 0
-        attached = 0
-
-        for rms_name in JUMBOTRON_RMS_NAMES:
-            target_name = f"{prefix}{base_name} [{rms_name}]"
-            material = bpy.data.materials.get(target_name)
-
-            if material is None:
-                material = source.copy()
-                material.name = target_name
-                created += 1
-
-            # These are new name-driven EBO materials. The visible bracketed
-            # RMS name is the requested runtime/template identity on export.
-            material["nba_live_new_material"] = True
-            material["nba_live_original_material_name"] = ""
-            material["nba_live_material_name"] = base_name
-            material["nba_live_rms_type"] = rms_name
-            material["nba_live_rms_display_type"] = rms_name
-
-            if material.name not in existing_slots:
-                obj.data.materials.append(material)
-                existing_slots.add(material.name)
-                attached += 1
-
-        self.report(
-            {"INFO"},
-            f"Jumbotron set ready: {created} created, {attached} slots added ({len(JUMBOTRON_RMS_NAMES)} total types)",
-        )
-        return {"FINISHED"}
 
 
 class NBA_OT_add_environment_material(bpy.types.Operator):
@@ -1387,8 +1046,13 @@ class NBA_OT_add_environment_material(bpy.types.Operator):
             image = _as_path(settings.new_material_texture)
             if image is None or not image.is_file() or image.suffix.lower() != ".png":
                 raise fsh_archive.FshError("Choose an existing PNG image for the new material.")
-            # Texture names are shareable across material rows. RMS/runtime
-            # identity, not the texture string alone, distinguishes materials.
+            for slot in obj.material_slots:
+                if slot.material is None:
+                    continue
+                properties = slot.material.nba_live_environment
+                current = properties.texture_name or slot.material.get("nba_live_material_name", slot.material.name)
+                if current == name:
+                    raise ebo_core.CourtFormatError(f"Object {obj.name!r} already uses material {name!r}.")
             archive_paths = json.loads(collection.get("nba_live_archives", "[]"))
             owner = next(
                 (Path(path).name for path in archive_paths if fsh_archive.archive_kind(path) == settings.new_material_archive),
@@ -1442,26 +1106,12 @@ class NBA_OT_remove_environment_material(bpy.types.Operator):
         obj = context.active_object
         index = obj.active_material_index
         material = obj.active_material
-        original_name = str(material.get("nba_live_original_material_name", "") or "")
-        original_rms = str(material.get("nba_live_rms_type", "") or "")
+        original_name = material.get("nba_live_original_material_name", "")
         original_names = json.loads(obj.get("nba_live_batch_materials", "[]"))
-        original_rms_types = json.loads(obj.get("nba_live_batch_rms", "[]"))
-        if len(original_rms_types) != len(original_names):
-            original_rms_types = [""] * len(original_names)
-        removed_indices = {
-            int(value) for value in json.loads(obj.get("nba_live_removed_batch_indices", "[]"))
-        }
-        candidates = [
-            i for i, (name, rms) in enumerate(zip(original_names, original_rms_types))
-            if name == original_name and rms == original_rms
-        ]
-        original_index = candidates[0] if len(candidates) == 1 else None
-        is_original = not material.get("nba_live_new_material") and original_index is not None
-        remaining_indices = [
-            i for i in range(len(original_names))
-            if i not in removed_indices and i != original_index
-        ]
-        if is_original and not remaining_indices:
+        removed = json.loads(obj.get("nba_live_removed_materials", "[]"))
+        is_original = not material.get("nba_live_new_material") and original_name in original_names
+        remaining = [name for name in original_names if name not in removed and name != original_name]
+        if is_original and not remaining:
             self.report({"ERROR"}, "Each EBO object must retain at least one original material group")
             return {"CANCELLED"}
 
@@ -1479,17 +1129,18 @@ class NBA_OT_remove_environment_material(bpy.types.Operator):
             obj.data.materials.pop(index=index, update_data=True)
 
             if is_original:
-                removed_indices.add(original_index)
-                obj["nba_live_removed_batch_indices"] = json.dumps(sorted(removed_indices))
-                replacement_index = remaining_indices[0]
+                removed.append(original_name)
+                obj["nba_live_removed_materials"] = json.dumps(removed)
+                replacement_index = original_names.index(remaining[0])
                 mesh_name = obj.get("nba_live_mesh_name", obj.name)
+                removed_index = original_names.index(original_name)
                 for slot in obj.material_slots:
                     other = slot.material
                     if other is None or not other.get("nba_live_new_material"):
                         continue
                     choices = json.loads(other.get("nba_live_template_batches", "{}"))
                     selected = int(choices.get(mesh_name, other.get("nba_live_template_batch_index", 0)))
-                    if selected == original_index:
+                    if selected == removed_index:
                         choices[mesh_name] = replacement_index
                         other["nba_live_template_batches"] = json.dumps(choices)
                         other["nba_live_template_batch_index"] = replacement_index
@@ -1690,11 +1341,6 @@ class NBA_PT_environment_panel(bpy.types.Panel):
         box.operator("nba_live.import_fbx", icon="IMPORT")
         box.operator("nba_live.export_fbx", icon="EXPORT")
 
-        jumbo = layout.box()
-        jumbo.label(text="Jumbotron Materials", icon="MATERIAL")
-        jumbo.prop(settings, "jumbotron_source_material")
-        jumbo.operator("nba_live.create_jumbotron_materials", icon="DUPLICATE")
-        jumbo.label(text="Creates all 69 score/clock/team/player RMS slots", icon="INFO")
 
         collection = _active_collection(context)
         if collection:
@@ -1726,7 +1372,6 @@ def _export_menu(self, context):
 CLASSES = (
     NBAEnvironmentMaterialSettings,
     NBAEnvironmentSettings,
-    NBA_OT_create_jumbotron_materials,
     NBA_OT_import_environment,
     NBA_OT_export_environment,
     NBA_OT_import_fbx,

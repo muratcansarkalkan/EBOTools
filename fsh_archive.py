@@ -569,14 +569,24 @@ def _rebuild_preserving_layout(
     archive: FshArchive,
     replacement_blocks: dict[str, bytes],
     required_names: frozenset[str],
+    excluded_names: frozenset[str] = frozenset(),
 ) -> bytes:
     source = archive.path.read_bytes()
     original_by_name = _original_blocks(archive)
     ordered: list[tuple[str, bytes]] = []
+
+    # Preserve original directory order, except for entries explicitly
+    # superseded by a material texture rename during export.
     for entry in archive.entries:
+        if entry.name in excluded_names:
+            continue
         block = replacement_blocks.get(entry.name, original_by_name[entry.name])
         ordered.append((entry.name, block))
-    for name in sorted(required_names - archive.texture_names):
+
+    # Append genuinely new required textures. An excluded source name must not
+    # be reintroduced even if it happens to appear in required_names.
+    existing_names = {name for name, _ in ordered}
+    for name in sorted(required_names - existing_names - excluded_names):
         block = replacement_blocks.get(name)
         if block is None:
             raise FshError(f"No encoded image block is available for new texture {name!r}.")
@@ -622,6 +632,7 @@ def repack_archive(
     output_directory: str | Path,
     *,
     required_names: frozenset[str] = frozenset(),
+    excluded_names: frozenset[str] = frozenset(),
 ) -> Path:
     """Rebuild an FSH natively, preserving untouched image blocks byte-for-byte."""
     try:
@@ -632,7 +643,9 @@ def repack_archive(
     images = Path(texture_directory).resolve()
     if not images.is_dir():
         raise FshError(f"Extracted texture directory is missing: {images}")
-    expected = archive.texture_names | required_names
+    # Required textures are added, while superseded source textures are
+    # deliberately omitted from the rebuilt archive.
+    expected = (archive.texture_names | required_names) - excluded_names
     name_map = _working_name_map(expected)
     missing = sorted(name for name in expected if not (images / f"{name_map[name]}.png").is_file())
     if missing:
@@ -649,7 +662,12 @@ def repack_archive(
     except synthetic_fsh.SyntheticFshError as exc:
         raise FshError(str(exc)) from exc
 
-    rebuilt_data = _rebuild_preserving_layout(archive, replacement_blocks, required_names)
+    rebuilt_data = _rebuild_preserving_layout(
+        archive,
+        replacement_blocks,
+        required_names,
+        excluded_names,
+    )
     output = Path(output_directory).resolve()
     output.mkdir(parents=True, exist_ok=True)
     final_path = output / archive.path.name
